@@ -192,7 +192,8 @@
             const config = await loadConfig();
             
             const script = document.createElement('script');
-            script.src = `https://www.paypal.com/sdk/js?client-id=${config.clientId}&vault=true&intent=capture&components=buttons&locale=ja_JP`;
+            script.src = `https://www.paypal.com/sdk/js?client-id=${config.clientId}&vault=true&intent=capture&locale=ja_JP&currency=JPY`;
+           // script.src = `https://www.paypal.com/sdk/js?client-id=${config.clientId}&vault=true&intent=capture&components=buttons&locale=ja_JP`;
             
             script.onload = () => {
                 console.log('PayPal SDK loaded');
