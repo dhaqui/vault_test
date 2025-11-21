@@ -199,9 +199,11 @@
 
         async function processPaymentWithVault(vaultId) {
             try {
+                addVaultLog('--- 保存された支払い方法で決済開始 ---', 'vault');
+                addVaultLog(`使用するVault ID: ${vaultId}`, 'vault');
                 showStatus('保存された支払い方法で注文を作成中...');
                 
-                // Vault IDを使ってOrder作成
+                // Vault IDを使ってOrder作成（自動的にCaptureされる）
                 const orderResponse = await fetch('/api/orders', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -214,22 +216,27 @@
                 const orderData = await orderResponse.json();
                 if (!orderResponse.ok) throw new Error(orderData.error);
                 
-                console.log('Order作成成功:', orderData.id);
-                showStatus('注文を処理中...');
+                addVaultLog(`✓ Order作成成功: ${orderData.id}`, 'success');
+                addVaultLog(`Order Status: ${orderData.status}`, 'info');
                 
-                // 即座にCapture
-                const captureResponse = await fetch(`/api/orders/${orderData.id}/capture`, {
-                    method: 'POST'
-                });
+                // Vault IDを使った場合、Orderのレスポンスに既にCaptureの情報が含まれている
+                const captureInfo = orderData.purchase_units?.[0]?.payments?.captures?.[0];
+                if (captureInfo) {
+                    addVaultLog('='.repeat(60), 'vault');
+                    addVaultLog('💰 決済完了情報', 'vault');
+                    addVaultLog('='.repeat(60), 'vault');
+                    addVaultLog(`Capture ID: ${captureInfo.id}`, 'success');
+                    addVaultLog(`Capture Status: ${captureInfo.status}`, 'success');
+                    addVaultLog(`金額: ${captureInfo.amount.value} ${captureInfo.amount.currency_code}`, 'info');
+                    addVaultLog('='.repeat(60), 'vault');
+                }
                 
-                const captureData = await captureResponse.json();
-                if (!captureResponse.ok) throw new Error(captureData.error);
-                
-                console.log('Capture成功:', captureData);
+                displayVaultDetails(orderData);
                 showStatus('✅ 保存された支払い方法で決済が完了しました！', true);
+                addVaultLog('✓ 保存された支払い方法での決済完了', 'success');
                 
             } catch (error) {
-                console.error('決済エラー:', error);
+                addVaultLog(`✗ 決済エラー: ${error.message}`, 'error');
                 showError('決済エラー: ' + error.message);
             }
         }
