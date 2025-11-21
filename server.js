@@ -142,7 +142,13 @@ app.post('/api/orders', async (req, res) => {
     
     // Vault IDがある場合（保存された支払い方法を使用）
     if (vaultId) {
-      console.log(`保存された支払い方法でOrder作成: Vault ID=${vaultId}`);
+      console.log('='.repeat(50));
+      console.log('保存された支払い方法でOrder作成');
+      console.log(`Vault ID: ${vaultId}`);
+      console.log(`Customer ID: ${customerId}`);
+      console.log('※ このOrderは自動的にCaptureされます');
+      console.log('='.repeat(50));
+      
       orderPayload = {
         intent: 'CAPTURE',
         purchase_units: [{
@@ -161,7 +167,15 @@ app.post('/api/orders', async (req, res) => {
       };
     } else {
       // 新規購入
-      console.log('新規Order作成');
+      console.log('='.repeat(50));
+      console.log('新規Order作成（Vault保存付き）');
+      if (customerId) {
+        console.log(`既存Customer ID使用: ${customerId}`);
+      } else {
+        console.log('新規Customer（初回購入）');
+      }
+      console.log('='.repeat(50));
+      
       orderPayload = {
         intent: 'CAPTURE',
         purchase_units: [{
@@ -196,6 +210,7 @@ app.post('/api/orders', async (req, res) => {
       
       if (customerId) {
         orderPayload.payment_source.paypal.attributes.vault.customer_id = customerId;
+        console.log('既存Customer IDをVault設定に追加');
       }
     }
     
@@ -211,6 +226,16 @@ app.post('/api/orders', async (req, res) => {
     });
     
     console.log('Order作成成功:', response.data.id);
+    console.log('Order Status:', response.data.status);
+    
+    // Vault IDを使った場合、自動的にCaptureされる
+    if (vaultId && response.data.purchase_units?.[0]?.payments?.captures) {
+      console.log('✓ 自動Capture完了（Vault ID使用）');
+      console.log('Capture ID:', response.data.purchase_units[0].payments.captures[0].id);
+    }
+    
+    console.log('='.repeat(50));
+    
     res.json(response.data);
     
   } catch (error) {
