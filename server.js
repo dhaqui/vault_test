@@ -27,6 +27,7 @@ console.log(`Mode: ${PAYPAL_MODE}`);
 console.log(`Client ID: ${PAYPAL_CLIENT_ID ? PAYPAL_CLIENT_ID.substring(0, 20) + '...' : 'NOT SET'}`);
 console.log('='.repeat(50));
 
+// ===== PayPal Access Token取得 =====
 async function getPayPalAccessToken() {
   try {
     const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
@@ -48,9 +49,21 @@ async function getPayPalAccessToken() {
   }
 }
 
-async function generateUserIdToken() {
+// ===== User ID Token生成（target_customer_id対応）=====
+async function generateUserIdToken(customerId = null) {
   try {
     const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
+    
+    // ベースとなるPOSTデータ
+    let postData = 'grant_type=client_credentials&response_type=id_token';
+    
+    // Returning payer用にtarget_customer_idを追加（重要！）
+    if (customerId) {
+      postData += `&target_customer_id=${customerId}`;
+      console.log(`✓ Returning payer用User ID Token生成: target_customer_id=${customerId}`);
+    } else {
+      console.log('✓ 新規payer用User ID Token生成');
+    }
     
     const response = await axios({
       method: 'post',
@@ -59,9 +72,10 @@ async function generateUserIdToken() {
         'Authorization': `Basic ${auth}`,
         'Content-Type': 'application/x-www-form-urlencoded'
       },
-      data: 'grant_type=client_credentials&response_type=id_token'
+      data: postData
     });
     
+    console.log('User ID Token生成成功');
     return {
       access_token: response.data.access_token,
       id_token: response.data.id_token
@@ -71,6 +85,8 @@ async function generateUserIdToken() {
     throw new Error('User ID Token生成に失敗しました');
   }
 }
+
+// ===== ルート =====
 
 app.get('/health', (req, res) => {
   res.json({ 
@@ -92,11 +108,24 @@ app.get('/api/config', (req, res) => {
   });
 });
 
+// User ID Token生成エンドポイント（target_customer_id対応）
 app.get('/api/generate-client-token', async (req, res) => {
   try {
-    const tokens = await generateUserIdToken();
+    // クエリパラメータからcustomer_idを取得
+    const { customer_id } = req.query;
+    
+    if (customer_id) {
+      console.log(`Returning payer用User ID Token生成リクエスト: ${customer_id}`);
+    } else {
+      console.log('新規payer用User ID Token生成リクエスト');
+    }
+    
+    // customer_idを渡してToken生成
+    const tokens = await generateUserIdToken(customer_id);
+    
     res.json({ id_token: tokens.id_token });
   } catch (error) {
+    console.error('Client Token生成エラー:', error.message);
     res.status(500).json({ 
       error: 'Client Token生成に失敗しました',
       details: error.message
@@ -104,7 +133,7 @@ app.get('/api/generate-client-token', async (req, res) => {
   }
 });
 
-// Payment Tokens取得（重要！保存された支払い方法を表示するため）
+// Payment Tokens取得
 app.get('/api/payment-tokens/:customerId', async (req, res) => {
   try {
     const { customerId } = req.params;
@@ -121,7 +150,7 @@ app.get('/api/payment-tokens/:customerId', async (req, res) => {
       }
     });
     
-    console.log('Payment Tokens取得成功:', response.data);
+    console.log('Payment Tokens取得成功');
     res.json(response.data);
     
   } catch (error) {
@@ -133,6 +162,7 @@ app.get('/api/payment-tokens/:customerId', async (req, res) => {
   }
 });
 
+// Order作成
 app.post('/api/orders', async (req, res) => {
   try {
     const accessToken = await getPayPalAccessToken();
@@ -143,7 +173,7 @@ app.post('/api/orders', async (req, res) => {
     // Vault IDがある場合（保存された支払い方法を使用）
     if (vaultId) {
       console.log('='.repeat(50));
-      console.log('保存された支払い方法でOrder作成');
+      console.log('💳 保存された支払い方法でOrder作成');
       console.log(`Vault ID: ${vaultId}`);
       console.log(`Customer ID: ${customerId}`);
       console.log('※ このOrderは自動的にCaptureされます');
@@ -168,7 +198,7 @@ app.post('/api/orders', async (req, res) => {
     } else {
       // 新規購入
       console.log('='.repeat(50));
-      console.log('新規Order作成（Vault保存付き）');
+      console.log('🆕 新規Order作成（Vault保存付き）');
       if (customerId) {
         console.log(`既存Customer ID使用: ${customerId}`);
       } else {
@@ -230,8 +260,10 @@ app.post('/api/orders', async (req, res) => {
     
     // Vault IDを使った場合、自動的にCaptureされる
     if (vaultId && response.data.purchase_units?.[0]?.payments?.captures) {
+      const capture = response.data.purchase_units[0].payments.captures[0];
       console.log('✓ 自動Capture完了（Vault ID使用）');
-      console.log('Capture ID:', response.data.purchase_units[0].payments.captures[0].id);
+      console.log(`Capture ID: ${capture.id}`);
+      console.log(`Capture Status: ${capture.status}`);
     }
     
     console.log('='.repeat(50));
@@ -247,6 +279,7 @@ app.post('/api/orders', async (req, res) => {
   }
 });
 
+// Order Capture（初回購入時のみ使用）
 app.post('/api/orders/:orderId/capture', async (req, res) => {
   try {
     const { orderId } = req.params;
@@ -265,6 +298,8 @@ app.post('/api/orders/:orderId/capture', async (req, res) => {
     });
     
     console.log('Capture成功:', response.data.id);
+    console.log('Vault Status:', response.data.payment_source?.paypal?.attributes?.vault?.status);
+    
     res.json(response.data);
     
   } catch (error) {
