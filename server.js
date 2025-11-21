@@ -13,7 +13,7 @@ const PORT = process.env.PORT || 3000;
 // PayPal設定
 const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
 const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
-const PAYPAL_MODE = process.env.PAYPAL_MODE || 'sandbox'; // 'sandbox' or 'live'
+const PAYPAL_MODE = process.env.PAYPAL_MODE || 'sandbox';
 const PAYPAL_API_BASE = PAYPAL_MODE === 'sandbox' 
   ? 'https://api-m.sandbox.paypal.com'
   : 'https://api-m.paypal.com';
@@ -23,7 +23,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ログ出力
+// サーバー起動ログ
 console.log('='.repeat(50));
 console.log('PayPal Vault Server Starting...');
 console.log('='.repeat(50));
@@ -55,6 +55,33 @@ async function getPayPalAccessToken() {
   }
 }
 
+// ===== User ID Tokenの生成（重要！）=====
+async function generateUserIdToken() {
+  try {
+    const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
+    
+    const response = await axios({
+      method: 'post',
+      url: `${PAYPAL_API_BASE}/v1/oauth2/token`,
+      headers: {
+        'Authorization': `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      // response_type=id_token を追加
+      data: 'grant_type=client_credentials&response_type=id_token'
+    });
+    
+    console.log('User ID Token生成成功');
+    return {
+      access_token: response.data.access_token,
+      id_token: response.data.id_token
+    };
+  } catch (error) {
+    console.error('User ID Token取得エラー:', error.response?.data || error.message);
+    throw new Error('User ID Token生成に失敗しました');
+  }
+}
+
 // ===== ルート =====
 
 // ヘルスチェック
@@ -77,6 +104,24 @@ app.get('/api/config', (req, res) => {
     clientId: PAYPAL_CLIENT_ID,
     mode: PAYPAL_MODE
   });
+});
+
+// User ID Token生成エンドポイント（重要！）
+app.get('/api/generate-client-token', async (req, res) => {
+  try {
+    console.log('User ID Token生成リクエスト受信');
+    const tokens = await generateUserIdToken();
+    
+    res.json({
+      id_token: tokens.id_token
+    });
+  } catch (error) {
+    console.error('Client Token生成エラー:', error.message);
+    res.status(500).json({ 
+      error: 'Client Token生成に失敗しました',
+      details: error.message
+    });
+  }
 });
 
 // Order作成
@@ -124,7 +169,7 @@ app.post('/api/orders', async (req, res) => {
       }
     };
     
-    // Customer IDがある場合は追加
+    // Customer IDがある場合は追加（リピーター用）
     if (customerId) {
       orderPayload.payment_source.paypal.attributes.vault.customer_id = customerId;
       console.log(`Customer ID使用: ${customerId}`);
