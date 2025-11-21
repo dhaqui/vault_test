@@ -141,7 +141,7 @@ app.post('/api/orders', async (req, res) => {
         {
           amount: {
             currency_code: 'JPY',
-            value: '1000'
+            value: '100'
           },
           description: 'PayPal Vault テスト商品'
         }
