@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PayPal Wallet Vault Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        
+        .header {
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+        
+        .header h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+        
+        .alert {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .alert-success {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        
+        .alert-danger {
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        
+        .alert-info {
+            background: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+        }
+        
+        .card {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        .card h2 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        
+        #paypal-button-container {
+            min-height: 150px;
+        }
+        
+        .loader {
+            text-align: center;
+            padding: 40px;
+            color: #666;
+        }
+        
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .customer-id-display {
+            background: white;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 14px;
+            word-break: break-all;
+            margin-top: 10px;
+        }
+        
+        .payment-method {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            border: 1px solid #e0e0e0;
+        }
+        
+        button {
+            padding: 12px 30px;
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 16px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        
+        button:hover {
+            background: #c82333;
+        }
+        
+        pre {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            overflow-x: auto;
+            font-size: 13px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>💳 PayPal Wallet Vault Demo</h1>
+            <p>購入時にPayPal Walletを保存し、次回以降の決済を簡単にします</p>
+        </div>
+
+        <div id="status-message"></div>
+        <div id="error-message"></div>
+        <div id="customer-id-section" style="display: none;"></div>
+
+        <div class="card">
+            <h2 id="button-title">🆕 新規購入とPayPal Wallet保存</h2>
+            <div id="paypal-button-container">
+                <div class="loader">
+                    <div class="spinner"></div>
+                    <span>PayPal SDKを読み込み中...</span>
+                </div>
+            </div>
+        </div>
+
+        <div id="saved-methods-section" style="display: none;"></div>
+        <div id="vault-details-section" style="display: none;"></div>
+
+        <button id="clear-button" onclick="clearTestData()" style="display: none; margin: 0 auto; display: block;">
+            🗑️ テストデータをクリア
+        </button>
+    </div>
+
+    <script>
+        let customerId = localStorage.getItem('paypal_customer_id') || null;
+        let savedPaymentMethods = JSON.parse(localStorage.getItem('payment_methods') || '[]');
+        let paypalConfig = null;
+
+        // Config取得
+        async function loadConfig() {
+            try {
+                const response = await fetch('/api/config');
+                const config = await response.json();
+                paypalConfig = config;
+                return config;
+            } catch (error) {
+                showError('設定の読み込みに失敗しました: ' + error.message);
+                throw error;
+            }
+        }
+
+        // PayPal SDK読み込み
+        async function loadPayPalSDK() {
+            const config = await loadConfig();
+            
+            const script = document.createElement('script');
+            script.src = `https://www.paypal.com/sdk/js?client-id=${config.clientId}&vault=true&intent=capture&components=buttons&locale=ja_JP`;
+            
+            script.onload = () => {
+                console.log('PayPal SDK loaded');
+                initPayPalButtons();
+            };
+            
+            script.onerror = () => {
+                showError('PayPal SDKの読み込みに失敗しました');
+            };
+            
+            document.head.appendChild(script);
+        }
+
+        // PayPalボタン初期化
+        function initPayPalButtons() {
+            const container = document.getElementById('paypal-button-container');
+            container.innerHTML = '';
+
+            if (customerId) {
+                document.getElementById('button-title').textContent = '💾 保存された支払い方法で決済';
+                displayCustomerId(customerId);
+            }
+
+            paypal.Buttons({
+                style: {
+                    layout: 'vertical',
+                    label: 'paypal'
+                },
+                
+                createOrder: async () => {
+                    try {
+                        showStatus('注文を作成中...');
+                        
+                        const response = await fetch('/api/orders', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ customerId })
+                        });
+                        
+                        const data = await response.json();
+                        
+                        if (!response.ok) {
+                            throw new Error(data.error || 'Order作成に失敗');
+                        }
+                        
+                        console.log('Order created:', data.id);
+                        showStatus('注文が作成されました');
+                        return data.id;
+                        
+                    } catch (error) {
+                        showError('注文作成エラー: ' + error.message);
+                        throw error;
+                    }
+                },
+                
+                onApprove: async (data) => {
+                    try {
+                        showStatus('支払いを処理中...');
+                        
+                        const response = await fetch(`/api/orders/${data.orderID}/capture`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' }
+                        });
+                        
+                        const captureData = await response.json();
+                        
+                        if (!response.ok) {
+                            throw new Error(captureData.error || 'Captureに失敗');
+                        }
+                        
+                        console.log('Capture success:', captureData);
+                        
+                        // Vault情報を保存
+                        const vaultInfo = captureData.payment_source?.paypal?.attributes?.vault;
+                        if (vaultInfo) {
+                            const newCustomerId = vaultInfo.customer?.id;
+                            if (newCustomerId) {
+                                customerId = newCustomerId;
+                                localStorage.setItem('paypal_customer_id', customerId);
+                                displayCustomerId(customerId);
+                            }
+                            
+                            const paypalInfo = captureData.payment_source.paypal;
+                            const newMethod = {
+                                id: vaultInfo.id,
+                                email: paypalInfo.email_address,
+                                name: `${paypalInfo.name?.given_name || ''} ${paypalInfo.name?.surname || ''}`,
+                                savedAt: new Date().toISOString()
+                            };
+                            
+                            savedPaymentMethods.push(newMethod);
+                            localStorage.setItem('payment_methods', JSON.stringify(savedPaymentMethods));
+                            displaySavedMethods();
+                            displayVaultDetails(vaultInfo);
+                        }
+                        
+                        document.getElementById('clear-button').style.display = 'block';
+                        showStatus('✅ 支払いが完了し、PayPal Walletが保存されました！', true);
+                        
+                    } catch (error) {
+                        showError('支払い処理エラー: ' + error.message);
+                    }
+                },
+                
+                onError: (err) => {
+                    showError('PayPalエラー: ' + (err.message || 'エラーが発生しました'));
+                },
+                
+                onCancel: () => {
+                    showStatus('取引がキャンセルされました');
+                }
+            }).render('#paypal-button-container');
+        }
+
+        // UI表示関数
+        function showStatus(message, isSuccess = false) {
+            const div = document.getElementById('status-message');
+            div.innerHTML = `<div class="alert ${isSuccess ? 'alert-success' : 'alert-info'}">${message}</div>`;
+            if (!isSuccess) setTimeout(() => div.innerHTML = '', 5000);
+        }
+
+        function showError(message) {
+            const div = document.getElementById('error-message');
+            div.innerHTML = `<div class="alert alert-danger">❌ ${message}</div>`;
+        }
+
+        function displayCustomerId(custId) {
+            const section = document.getElementById('customer-id-section');
+            section.style.display = 'block';
+            section.innerHTML = `
+                <div class="alert alert-info">
+                    <strong>保存されたCustomer ID:</strong>
+                    <div class="customer-id-display">${custId}</div>
+                </div>
+            `;
+        }
+
+        function displaySavedMethods() {
+            if (savedPaymentMethods.length === 0) return;
+            
+            const section = document.getElementById('saved-methods-section');
+            section.style.display = 'block';
+            section.innerHTML = `
+                <div class="card">
+                    <h2>💳 保存された支払い方法</h2>
+                    ${savedPaymentMethods.map(method => `
+                        <div class="payment-method">
+                            <strong>${method.name}</strong><br>
+                            ${method.email}<br>
+                            <small>Vault ID: ${method.id}</small><br>
+                            <small>保存: ${new Date(method.savedAt).toLocaleString('ja-JP')}</small>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
+
+        function displayVaultDetails(vaultData) {
+            const section = document.getElementById('vault-details-section');
+            section.style.display = 'block';
+            section.innerHTML = `
+                <div class="card">
+                    <h2>📋 Vault詳細</h2>
+                    <pre>${JSON.stringify(vaultData, null, 2)}</pre>
+                </div>
+            `;
+        }
+
+        function clearTestData() {
+            customerId = null;
+            savedPaymentMethods = [];
+            localStorage.removeItem('paypal_customer_id');
+            localStorage.removeItem('payment_methods');
+            
+            document.getElementById('customer-id-section').style.display = 'none';
+            document.getElementById('saved-methods-section').style.display = 'none';
+            document.getElementById('vault-details-section').style.display = 'none';
+            document.getElementById('clear-button').style.display = 'none';
+            document.getElementById('status-message').innerHTML = '';
+            document.getElementById('error-message').innerHTML = '';
+            
+            initPayPalButtons();
+        }
+
+        // 初期化
+        window.addEventListener('DOMContentLoaded', () => {
+            loadPayPalSDK();
+            if (savedPaymentMethods.length > 0) {
+                displaySavedMethods();
+                document.getElementById('clear-button').style.display = 'block';
+            }
+        });
+    </script>
+</body>
+</html>
