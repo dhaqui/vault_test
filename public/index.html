@@ -53,6 +53,28 @@
             font-size: 14px;
             word-break: break-all;
         }
+        .vault-pay-button {
+            margin-top: 10px;
+            padding: 15px 20px;
+            background: linear-gradient(135deg, #0070ba 0%, #005a94 100%);
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            width: 100%;
+            font-size: 16px;
+            transition: all 0.3s;
+            box-shadow: 0 2px 8px rgba(0,112,186,0.3);
+        }
+        .vault-pay-button:hover {
+            background: linear-gradient(135deg, #005a94 0%, #004070 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,112,186,0.5);
+        }
+        .vault-pay-button:active {
+            transform: translateY(0);
+        }
         .debug-log {
             background: #1e1e1e;
             color: #d4d4d4;
@@ -131,6 +153,7 @@
         let customerId = localStorage.getItem('paypal_customer_id') || null;
         let payerId = localStorage.getItem('paypal_payer_id') || null;
         let accountId = localStorage.getItem('paypal_account_id') || null;
+        let vaultId = localStorage.getItem('paypal_vault_id') || null;
 
         function addVaultLog(message, type = 'info') {
             const logDiv = document.getElementById('vault-log');
@@ -149,7 +172,7 @@
         }
 
         function displayUserInfo() {
-            if (!customerId && !payerId && !accountId) return;
+            if (!customerId && !payerId && !accountId && !vaultId) return;
             
             const section = document.getElementById('user-info-section');
             const content = document.getElementById('user-info-content');
@@ -157,6 +180,17 @@
             section.style.display = 'block';
             
             let html = '';
+            if (vaultId) {
+                html += `
+                    <div class="info-box" style="border-left-color: #0070ba;">
+                        <div class="info-label">🔐 Vault ID（支払いトークン）:</div>
+                        <div class="info-value">${vaultId}</div>
+                        <button onclick="payWithVaultId()" class="vault-pay-button">
+                            💳 このVault IDで100円決済する（ワンクリック）
+                        </button>
+                    </div>
+                `;
+            }
             if (customerId) {
                 html += `
                     <div class="info-box">
@@ -183,6 +217,64 @@
             }
             
             content.innerHTML = html;
+        }
+
+        // Vault IDを使ってワンクリック決済
+        async function payWithVaultId() {
+            if (!vaultId) {
+                showError('Vault IDが見つかりません');
+                return;
+            }
+            
+            if (!confirm(`Vault ID: ${vaultId}\nを使って100円決済しますか？`)) {
+                return;
+            }
+            
+            try {
+                addVaultLog('='.repeat(60), 'vault');
+                addVaultLog('💳 Vault IDでワンクリック決済開始', 'vault');
+                addVaultLog(`使用するVault ID: ${vaultId}`, 'vault');
+                addVaultLog('='.repeat(60), 'vault');
+                
+                showStatus('Vault IDで注文を作成中...');
+                
+                // Vault IDを使ってOrder作成（自動的にCaptureされる）
+                const orderResponse = await fetch('/api/orders', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        customerId,
+                        vaultId 
+                    })
+                });
+                
+                const orderData = await orderResponse.json();
+                if (!orderResponse.ok) throw new Error(orderData.error);
+                
+                addVaultLog(`✓ Order作成成功: ${orderData.id}`, 'success');
+                addVaultLog(`Order Status: ${orderData.status}`, 'info');
+                
+                // Captureの情報を確認
+                const captureInfo = orderData.purchase_units?.[0]?.payments?.captures?.[0];
+                if (captureInfo) {
+                    addVaultLog('='.repeat(60), 'vault');
+                    addVaultLog('💰 自動Capture完了', 'vault');
+                    addVaultLog('='.repeat(60), 'vault');
+                    addVaultLog(`Capture ID: ${captureInfo.id}`, 'success');
+                    addVaultLog(`Capture Status: ${captureInfo.status}`, 'success');
+                    addVaultLog(`金額: ${captureInfo.amount.value} ${captureInfo.amount.currency_code}`, 'info');
+                    addVaultLog(`作成時刻: ${captureInfo.create_time}`, 'info');
+                    addVaultLog('='.repeat(60), 'vault');
+                }
+                
+                displayVaultDetails(orderData);
+                showStatus('✅ Vault IDで決済が完了しました！', true);
+                addVaultLog('✓ Vault IDワンクリック決済完了', 'success');
+                
+            } catch (error) {
+                addVaultLog(`✗ 決済エラー: ${error.message}`, 'error');
+                showError('決済エラー: ' + error.message);
+            }
         }
 
         async function loadPayPalSDK() {
@@ -309,6 +401,12 @@
                         addVaultLog('='.repeat(60), 'vault');
                         
                         // LocalStorageに保存
+                        if (vaultInfo?.id) {
+                            vaultId = vaultInfo.id;
+                            localStorage.setItem('paypal_vault_id', vaultId);
+                            addVaultLog(`✓ Vault ID保存: ${vaultId}`, 'success');
+                        }
+                        
                         if (vaultInfo?.customer?.id) {
                             customerId = vaultInfo.customer.id;
                             localStorage.setItem('paypal_customer_id', customerId);
@@ -389,8 +487,9 @@
             addVaultLog('='.repeat(60), 'info');
             addVaultLog('📱 ページロード完了', 'info');
             
-            if (customerId || payerId || accountId) {
+            if (customerId || payerId || accountId || vaultId) {
                 addVaultLog('--- 保存済みユーザー情報検出 ---', 'vault');
+                if (vaultId) addVaultLog(`Vault ID: ${vaultId}`, 'vault');
                 if (customerId) addVaultLog(`Customer ID: ${customerId}`, 'vault');
                 if (payerId) addVaultLog(`Payer ID: ${payerId}`, 'vault');
                 if (accountId) addVaultLog(`Account ID: ${accountId}`, 'vault');
