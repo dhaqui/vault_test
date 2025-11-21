@@ -252,7 +252,7 @@
                 const script = document.createElement('script');
                 script.src = `https://www.paypal.com/sdk/js?client-id=${config.clientId}&vault=true&intent=capture&locale=ja_JP&currency=JPY`;
                 script.setAttribute('data-user-id-token', tokenData.id_token);
-                script.onload = () => initPayPalButtons();
+                script.onload = () => initPayPalButtons();　
                 document.head.appendChild(script);
                 
             } catch (error) {
