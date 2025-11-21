@@ -1,4 +1,4 @@
-
+<!DOCTYPE html>
 <html lang="ja">
 <head>
     <meta charset="UTF-8">
@@ -173,6 +173,47 @@
             word-break: break-all;
             margin-top: 10px;
         }
+        
+        .debug-section {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border: 1px solid #dee2e6;
+        }
+        
+        .debug-section h3 {
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+        
+        .debug-log {
+            background: white;
+            padding: 10px;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+        
+        .debug-log div {
+            margin-bottom: 4px;
+            line-height: 1.5;
+        }
+        
+        .debug-info {
+            color: #0066cc;
+        }
+        
+        .debug-success {
+            color: #28a745;
+        }
+        
+        .debug-error {
+            color: #dc3545;
+        }
     </style>
 </head>
 <body>
@@ -181,6 +222,14 @@
         <div class="header">
             <h1>💳 PayPal Wallet Vault Demo</h1>
             <p>購入時にPayPal Walletを保存し、次回以降の決済を簡単にします</p>
+        </div>
+
+        <!-- デバッグログ -->
+        <div class="debug-section">
+            <h3>🐛 デバッグ情報</h3>
+            <div class="debug-log" id="debug-log">
+                <div class="debug-info">デバッグログ...</div>
+            </div>
         </div>
 
         <!-- ステータスメッセージ -->
@@ -224,60 +273,107 @@
         let customerId = localStorage.getItem('paypal_customer_id') || null;
         let savedPaymentMethods = JSON.parse(localStorage.getItem('payment_methods') || '[]');
 
+        // ===== デバッグログ関数 =====
+        function addDebugLog(message, type = 'info') {
+            const logDiv = document.getElementById('debug-log');
+            const timestamp = new Date().toLocaleTimeString('ja-JP');
+            const className = type === 'error' ? 'debug-error' : type === 'success' ? 'debug-success' : 'debug-info';
+            const logEntry = document.createElement('div');
+            logEntry.className = className;
+            logEntry.textContent = `[${timestamp}] ${message}`;
+            logDiv.appendChild(logEntry);
+            logDiv.scrollTop = logDiv.scrollHeight;
+            console.log(message);
+        }
+
         // ===== PayPal SDK読み込み =====
         async function loadPayPalSDK() {
             try {
-                console.log('PayPal SDK読み込み開始');
+                addDebugLog('PayPal SDK読み込み開始');
+                addDebugLog(`LocalStorage Customer ID: ${customerId || 'なし'}`);
                 
-                // 1. Configを取得
+                // 1. サーバー接続確認
+                const healthResponse = await fetch('/health');
+                if (!healthResponse.ok) {
+                    throw new Error('サーバーに接続できません');
+                }
+                const healthData = await healthResponse.json();
+                addDebugLog(`サーバー接続OK - Mode: ${healthData.mode}`, 'success');
+                
+                if (!healthData.clientIdConfigured || !healthData.clientSecretConfigured) {
+                    throw new Error('PayPal認証情報が未設定');
+                }
+                
+                // 2. Configを取得
                 const configResponse = await fetch('/api/config');
+                if (!configResponse.ok) {
+                    throw new Error('Config取得エラー');
+                }
                 const config = await configResponse.json();
-                console.log('Config取得成功');
+                addDebugLog('Config取得成功', 'success');
+                addDebugLog(`Client ID: ${config.clientId.substring(0, 20)}...`);
                 
-                // 2. User ID Tokenを取得（重要！）
-                console.log('User ID Token取得中...');
+                // 3. User ID Tokenを取得（重要！）
+                addDebugLog('User ID Token取得中...');
                 const tokenResponse = await fetch('/api/generate-client-token');
+                
+                if (!tokenResponse.ok) {
+                    throw new Error('User ID Token取得エラー');
+                }
+                
                 const tokenData = await tokenResponse.json();
                 
                 if (!tokenData.id_token) {
-                    throw new Error('User ID Tokenが取得できませんでした');
+                    throw new Error('id_tokenが空です');
                 }
                 
-                console.log('User ID Token取得成功');
+                addDebugLog('User ID Token取得成功', 'success');
+                addDebugLog(`ID Token: ${tokenData.id_token.substring(0, 30)}...`);
                 
-                // 3. PayPal SDKを読み込み
+                // 4. PayPal SDKを読み込み（公式ドキュメント通り）
                 const script = document.createElement('script');
                 script.src = `https://www.paypal.com/sdk/js?client-id=${config.clientId}&vault=true&intent=capture&locale=ja_JP&currency=JPY`;
-                
-                // User ID Tokenをdata属性として設定（重要！）
+                // data-user-id-token属性を設定（公式ドキュメント通り）
                 script.setAttribute('data-user-id-token', tokenData.id_token);
                 
+                addDebugLog('PayPal SDK script要素作成完了');
+                addDebugLog('data-user-id-token属性を設定');
+                
                 script.onload = () => {
-                    console.log('PayPal SDK読み込み完了');
+                    addDebugLog('✅ PayPal SDK読み込み完了', 'success');
+                    addDebugLog(`PayPal object available: ${!!window.paypal}`);
+                    addDebugLog(`PayPal.Buttons available: ${!!(window.paypal && window.paypal.Buttons)}`);
+                    // SDKロード完了後にButtonsを初期化
                     initPayPalButtons();
                 };
                 
-                script.onerror = () => {
+                script.onerror = (err) => {
+                    addDebugLog('❌ PayPal SDK読み込み失敗', 'error');
                     showError('PayPal SDKの読み込みに失敗しました');
                 };
                 
                 document.head.appendChild(script);
+                addDebugLog('PayPal script要素をDOMに追加');
                 
             } catch (error) {
-                console.error('初期化エラー:', error);
+                addDebugLog(`❌ 初期化エラー: ${error.message}`, 'error');
                 showError('初期化エラー: ' + error.message);
             }
         }
 
         // ===== PayPalボタン初期化 =====
         function initPayPalButtons() {
-            console.log('PayPalボタン初期化開始');
+            addDebugLog('PayPalボタン初期化開始');
+            addDebugLog(`Customer ID: ${customerId || 'なし'}`);
             
             // Customer IDがある場合の表示
             if (customerId) {
                 document.getElementById('button-title').textContent = '💾 保存された支払い方法で決済';
                 displayCustomerId(customerId);
                 document.getElementById('vault-hint').style.display = 'block';
+                addDebugLog(`Customer IDでボタンを初期化: ${customerId}`, 'info');
+            } else {
+                addDebugLog('新規ユーザー - Customer IDなし', 'info');
             }
             
             // 保存された支払い方法を表示
@@ -289,7 +385,8 @@
             const container = document.getElementById('paypal-button-container');
             container.innerHTML = '';
 
-            paypal.Buttons({
+            // ボタン設定を構築
+            const buttonConfig = {
                 style: {
                     layout: 'vertical',
                     label: 'paypal',
@@ -298,7 +395,7 @@
                 
                 createOrder: async () => {
                     try {
-                        console.log('createOrder開始');
+                        addDebugLog('createOrder開始');
                         showStatus('注文を作成中...');
                         
                         const response = await fetch('/api/orders', {
@@ -313,12 +410,12 @@
                             throw new Error(data.error || 'Order作成に失敗');
                         }
                         
-                        console.log('Order作成成功:', data.id);
+                        addDebugLog(`Order作成成功: ${data.id}`, 'success');
                         showStatus('注文が作成されました');
                         return data.id;
                         
                     } catch (error) {
-                        console.error('Order作成エラー:', error);
+                        addDebugLog(`Order作成エラー: ${error.message}`, 'error');
                         showError('注文作成エラー: ' + error.message);
                         throw error;
                     }
@@ -326,7 +423,7 @@
                 
                 onApprove: async (data) => {
                     try {
-                        console.log('onApprove開始:', data.orderID);
+                        addDebugLog(`onApprove開始: ${data.orderID}`);
                         showStatus('支払いを処理中...');
                         
                         const response = await fetch(`/api/orders/${data.orderID}/capture`, {
@@ -340,19 +437,24 @@
                             throw new Error(captureData.error || 'Captureに失敗');
                         }
                         
-                        console.log('Capture成功:', captureData);
+                        addDebugLog('Capture成功', 'success');
                         
-                        // Vault情報を保存
+                        // Vault情報を確認
                         const vaultInfo = captureData.payment_source?.paypal?.attributes?.vault;
+                        addDebugLog(`Vault情報: ${JSON.stringify(vaultInfo)}`, 'info');
+                        
                         if (vaultInfo) {
-                            console.log('Vault情報:', vaultInfo);
+                            addDebugLog(`Vault Status: ${vaultInfo.status}`, vaultInfo.status === 'VAULTED' ? 'success' : 'error');
                             
                             const newCustomerId = vaultInfo.customer?.id;
                             if (newCustomerId) {
                                 customerId = newCustomerId;
                                 localStorage.setItem('paypal_customer_id', customerId);
                                 displayCustomerId(customerId);
-                                console.log('Customer ID保存:', customerId);
+                                addDebugLog(`Customer ID保存: ${customerId}`, 'success');
+                                addDebugLog('⚠️ ページをリロードすると保存された支払い方法が表示されます', 'info');
+                            } else {
+                                addDebugLog('⚠️ Customer IDが取得できませんでした', 'error');
                             }
                             
                             const paypalInfo = captureData.payment_source.paypal;
@@ -369,27 +471,55 @@
                             displaySavedMethods();
                             displayVaultDetails(vaultInfo);
                             displayOrderDetails(captureData);
+                        } else {
+                            addDebugLog('⚠️ Vault情報が見つかりません - Captureレスポンスを確認', 'error');
                         }
                         
                         document.getElementById('clear-button').style.display = 'block';
-                        showStatus('✅ 支払いが完了し、PayPal Walletが保存されました！', true);
+                        showStatus('✅ 支払いが完了し、PayPal Walletが保存されました！ページをリロードしてください。', true);
+                        
+                        // 5秒後に自動リロードの提案
+                        setTimeout(() => {
+                            if (confirm('保存された支払い方法を表示するためにページをリロードしますか？')) {
+                                location.reload();
+                            }
+                        }, 2000);
                         
                     } catch (error) {
-                        console.error('支払い処理エラー:', error);
+                        addDebugLog(`支払い処理エラー: ${error.message}`, 'error');
                         showError('支払い処理エラー: ' + error.message);
                     }
                 },
                 
                 onError: (err) => {
-                    console.error('PayPalエラー:', err);
+                    addDebugLog(`PayPalエラー: ${JSON.stringify(err)}`, 'error');
                     showError('PayPalエラー: ' + (err.message || 'エラーが発生しました'));
                 },
                 
                 onCancel: () => {
-                    console.log('取引キャンセル');
+                    addDebugLog('取引キャンセル');
                     showStatus('取引がキャンセルされました');
                 }
-            }).render('#paypal-button-container');
+            };
+
+            // Customer IDがある場合はvault設定を追加（重要！）
+            if (customerId) {
+                buttonConfig.vault = {
+                    customer_id: customerId
+                };
+                addDebugLog(`✅ Vault設定を追加: customer_id=${customerId}`, 'success');
+            } else {
+                addDebugLog('Vault設定なし（新規ユーザー）', 'info');
+            }
+
+            addDebugLog('PayPal Buttonsレンダリング開始...');
+            paypal.Buttons(buttonConfig).render('#paypal-button-container')
+                .then(() => {
+                    addDebugLog('✅ PayPal Buttonsレンダリング完了', 'success');
+                })
+                .catch((err) => {
+                    addDebugLog(`❌ Buttonsレンダリングエラー: ${err.message}`, 'error');
+                });
         }
 
         // ===== UI表示関数 =====
@@ -453,7 +583,7 @@
             section.style.display = 'block';
             section.innerHTML = `
                 <div class="card">
-                    <h2>📦 注文詳細</h2>
+                    <h2>📦 注文詳細（Captureレスポンス）</h2>
                     <pre>${JSON.stringify(orderData, null, 2)}</pre>
                 </div>
             `;
@@ -462,29 +592,21 @@
         function clearTestData() {
             if (!confirm('保存されたデータを全てクリアしますか？')) return;
             
+            addDebugLog('テストデータクリア実行');
             customerId = null;
             savedPaymentMethods = [];
             localStorage.clear();
             
-            document.getElementById('customer-id-section').style.display = 'none';
-            document.getElementById('saved-methods-section').style.display = 'none';
-            document.getElementById('vault-details-section').style.display = 'none';
-            document.getElementById('order-details-section').style.display = 'none';
-            document.getElementById('clear-button').style.display = 'none';
-            document.getElementById('button-title').textContent = '🆕 新規購入とPayPal Wallet保存';
-            document.getElementById('vault-hint').style.display = 'none';
-            document.getElementById('status-message').innerHTML = '';
-            document.getElementById('error-message').innerHTML = '';
-            
-            console.log('テストデータクリア完了');
             location.reload();
         }
 
         // ===== 初期化 =====
         window.addEventListener('DOMContentLoaded', () => {
-            console.log('ページ読み込み完了');
+            addDebugLog('ページ読み込み完了');
+            addDebugLog('='.repeat(50));
             loadPayPalSDK();
         });
     </script>
 </body>
+</html>
 </html>
