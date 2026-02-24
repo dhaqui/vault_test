@@ -415,7 +415,8 @@
                 addVaultLog(`✓ Vault設定追加: customer_id=${customerId}`, 'vault');
             }
 
-            paypal.Buttons(buttonConfig).render('#paypal-button-container')
+           // paypal.Buttons(buttonConfig).render('#paypal-button-container')
+            paypal.Buttons().render('#paypal-button-container')
                 .then(() => addVaultLog('✓ PayPalボタン表示完了', 'success'))
                 .catch(err => addVaultLog(`✗ ボタン表示エラー: ${err.message}`, 'error'));
         }
