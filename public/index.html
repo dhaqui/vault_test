@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>PayPal Vault Demo — Returning + One-click</title>
+  <title>PayPal Vault — Returning + One-click</title>
   <style>
     body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;padding:24px;background:#f6f8fb}
     .card{max-width:900px;margin:0 auto;background:#fff;padding:20px;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,.06)}
@@ -19,7 +19,7 @@
 <body>
   <div class="card">
     <h1>PayPal Vault — Returning + One-click</h1>
-    <p class="info">保存済み（Vault）をボタンに表示しつつ、Vault IDがある場合はボタン押下でサーバ側 Create→Capture を走らせワンクリック決済を完了します。</p>
+    <p class="info">保存済み（Vault）をボタンに表示し、Vaultがある場合はモーダルを開かずにワンクリック決済を完了します。</p>
 
     <div style="margin-bottom:12px">
       <button id="clearStorage" class="muted">LocalStorage クリア</button>
@@ -126,14 +126,13 @@
       return;
     }
 
-    // update UI title based on vault existence
     if (vaultId) {
       const desc = document.createElement('div');
       desc.innerHTML = '<strong>⚡ ワンクリック（保存済み）で支払います</strong>';
       document.getElementById('paypal-button-container').appendChild(desc);
     }
 
-    // capturedOrders はサーバ側で既に capture 済みの orderId をチェックするための Set
+    // Set to record orders captured by server
     const capturedOrders = new Set();
 
     paypal.Buttons({
@@ -146,7 +145,7 @@
       onClick: async (data, actions) => {
         try {
           if (vaultId) {
-            log('onClick: vaultId present — calling /api/orders/oneclick before SDK approval');
+            log('onClick: vaultId present — calling /api/orders/oneclick (single API call)');
 
             const resp = await fetch('/api/orders/oneclick', {
               method: 'POST',
@@ -163,14 +162,14 @@
               return;
             }
 
-            // Success: server has created+captured
+            // Success: server did Create+Capture
             log('oneclick (onClick) success, order:', body.orderId, 'capture status:', body.capture?.status);
             if (body.orderId) capturedOrders.add(body.orderId);
 
-            // Prevent SDK from opening modal
+            // Prevent SDK modal from opening (no popup at all)
             await actions.reject();
 
-            // Update localStorage with any returned vault/customer/payer info
+            // Update localStorage with returned info
             const cap = body.capture;
             const vaultInfo = cap?.payment_source?.paypal?.attributes?.vault;
             const payerInfo = cap?.payer;
@@ -198,7 +197,7 @@
             return;
           }
 
-          // If no vaultId, allow SDK normal behavior (open modal)
+          // If no vaultId, allow SDK behavior (modal opens)
           await actions.resolve();
         } catch (err) {
           console.error('onClick error', err);
@@ -207,61 +206,45 @@
         }
       },
 
-      // createOrder: fallback or initial flow handler
+      // createOrder: fallback / initial flow
       createOrder: async () => {
         try {
           if (vaultId) {
-            log('createOrder: vaultId present — calling /api/orders/oneclick');
-            const resp = await fetch('/api/orders/oneclick', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ vaultId, customerId, amount: '100', currency: 'JPY' })
-            });
-            const data = await resp.json();
-            if (!resp.ok) {
-              log('oneclick (createOrder) error', JSON.stringify(data));
-              throw new Error(data.error || JSON.stringify(data));
-            }
-            if (data.orderId) capturedOrders.add(data.orderId);
-            log('oneclick createOrder success', data.orderId);
-            return data.orderId;
-          } else {
-            log('createOrder: calling /api/orders for initial flow');
-            const resp = await fetch('/api/orders', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ customerId })
-            });
-            const data = await resp.json();
-            if (!resp.ok) {
-              log('createOrder error', JSON.stringify(data));
-              throw new Error(data.error || JSON.stringify(data));
-            }
-            log('order created (initial):', data.id);
-            return data.id;
+            // Safety: block createOrder if vault handled in onClick. Prevent duplicate API calls.
+            log('createOrder called while vaultId exists — blocking to avoid duplicate oneclick');
+            throw new Error('createOrder blocked because vaultId handled in onClick');
           }
+          // Normal initial flow
+          log('createOrder: calling /api/orders for initial flow');
+          const resp = await fetch('/api/orders', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ customerId })
+          });
+          const data = await resp.json();
+          if (!resp.ok) throw new Error(data.error || JSON.stringify(data));
+          log('order created (initial):', data.id);
+          return data.id;
         } catch (err) {
           console.error('createOrder error', err);
           throw err;
         }
       },
 
-      // onApprove: skip capture if server already captured
+      // onApprove: skip if server already captured
       onApprove: async (data) => {
         try {
           const orderId = data.orderID || data.orderId;
           log('onApprove called for', orderId);
-
           if (capturedOrders.has(orderId)) {
             log('Order already captured on server; skipping client-side capture:', orderId);
             return;
           }
 
-          // Otherwise perform capture (normal initial flow)
+          // Normal capture for initial flow
           const resp = await fetch(`/api/orders/${orderId}/capture`, { method: 'POST' });
           const capture = await resp.json();
           if (!resp.ok) {
-            // treat ORDER_ALREADY_CAPTURED as success
             if (capture && capture.name === 'UNPROCESSABLE_ENTITY') {
               const already = (capture.details || []).some(d => d.issue === 'ORDER_ALREADY_CAPTURED');
               if (already) {
@@ -273,10 +256,9 @@
             throw new Error(capture.error || JSON.stringify(capture));
           }
 
-          log('capture succeeded:', capture);
           capturedOrders.add(orderId);
 
-          // Save possible vault/customer info
+          // Save vault/customer/payer info if present
           const vaultInfo = capture.payment_source?.paypal?.attributes?.vault;
           const payerInfo = capture.payer;
           const paypalSource = capture.payment_source?.paypal;
@@ -308,7 +290,7 @@
     }).render('#paypal-button-container').then(()=> log('PayPal buttons rendered'));
   }
 
-  // Button: direct oneclick (same as clicking PayPal button when vault exists)
+  // direct oneclick button (same as clicking PayPal button when vault exists)
   document.getElementById('oneclickDirect').onclick = async () => {
     if (!vaultId) return alert('Vault IDがありません。まずVaultを作成してください（初回購入）。');
     log('直接ワンクリック実行: calling /api/orders/oneclick');
@@ -339,7 +321,7 @@
       }
       if (payerInfo?.payer_id) {
         payerId = payerInfo.payer_id;
-        localStorage.setItem('paypal_payer_id', payerId);
+        localStorage.setItem('paypal_payer_id', payerInfo.payer_id);
       }
       if (paypalSource?.account_id) {
         accountId = paypalSource.account_id;
