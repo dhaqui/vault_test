@@ -1,11 +1,9 @@
-// server.js (uuid を使わない版 — crypto.randomUUID を利用)
+// server.js
 const express = require('express');
 const axios = require('axios');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const path = require('path');
-// const { v4: uuidv4 } = require('uuid'); // removed
-const { randomUUID } = require('crypto'); // use Node builtin UUID
 
 dotenv.config();
 
@@ -15,22 +13,20 @@ const PORT = process.env.PORT || 3000;
 const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
 const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
 const PAYPAL_MODE = process.env.PAYPAL_MODE || 'sandbox';
-const PAYPAL_API_BASE = PAYPAL_MODE === 'sandbox'
-  ? 'https://api-m.sandbox.paypal.com'
-  : 'https://api-m.paypal.com';
+
+const PAYPAL_API_BASE =
+  PAYPAL_MODE === 'sandbox'
+    ? 'https://api-m.sandbox.paypal.com'
+    : 'https://api-m.paypal.com';
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Simple in-memory idempotency map: key -> { orderId, capture, createdAt }
-// Key should be PayPal-Request-Id or merchant-provided id; in production use Redis/DB.
-const idempotencyStore = new Map();
-const IDEMPOTENCY_TTL_MS = 1000 * 60 * 60; // 1 hour for demo; adjust in prod
-
+// --- Utilities ---
 function requireEnv() {
   if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
-    throw new Error('PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET not set');
+    throw new Error('PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET が未設定です');
   }
 }
 
@@ -41,100 +37,137 @@ async function getPayPalAccessToken() {
     const resp = await axios({
       method: 'post',
       url: `${PAYPAL_API_BASE}/v1/oauth2/token`,
-      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-      data: 'grant_type=client_credentials'
+      headers: {
+        Authorization: `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      data: 'grant_type=client_credentials',
     });
     return resp.data.access_token;
   } catch (err) {
-    console.error('getPayPalAccessToken error:', err.response?.data || err.message);
+    console.error('Access Token取得エラー:', err.response?.data || err.message);
     throw err;
   }
 }
 
-// Generate id_token (response_type=id_token); supports target_customer_id for Returning Payer
+// Generate User ID token (response_type=id_token). If customerId provided, attach as target_customer_id
 async function generateUserIdToken(customerId = null) {
   requireEnv();
   try {
     const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
     let postData = 'grant_type=client_credentials&response_type=id_token';
-    if (customerId) postData += `&target_customer_id=${encodeURIComponent(customerId)}`;
+    if (customerId) {
+      postData += `&target_customer_id=${encodeURIComponent(customerId)}`;
+      console.log(`Generating id_token for returning payer (target_customer_id=${customerId})`);
+    } else {
+      console.log('Generating id_token for new payer');
+    }
 
     const resp = await axios({
       method: 'post',
       url: `${PAYPAL_API_BASE}/v1/oauth2/token`,
-      headers: { Authorization: `Basic ${auth}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-      data: postData
+      headers: {
+        Authorization: `Basic ${auth}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      data: postData,
     });
 
-    return { id_token: resp.data.id_token, access_token: resp.data.access_token };
+    return {
+      access_token: resp.data.access_token,
+      id_token: resp.data.id_token,
+    };
   } catch (err) {
-    console.error('generateUserIdToken error:', err.response?.data || err.message);
+    console.error('User ID Token取得エラー:', err.response?.data || err.message);
     throw err;
   }
 }
 
-// Cleanup expired idempotency entries (simple)
-function cleanupIdempotency() {
-  const now = Date.now();
-  for (const [key, val] of idempotencyStore.entries()) {
-    if (now - val.createdAt > IDEMPOTENCY_TTL_MS) idempotencyStore.delete(key);
-  }
-}
-setInterval(cleanupIdempotency, 1000 * 60 * 10); // every 10 minutes
-
-// Routes
-app.get('/health', (_, res) => res.json({ status: 'OK', mode: PAYPAL_MODE }));
+// --- Routes ---
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'OK',
+    mode: PAYPAL_MODE,
+    clientIdConfigured: !!PAYPAL_CLIENT_ID,
+    clientSecretConfigured: !!PAYPAL_CLIENT_SECRET,
+  });
+});
 
 app.get('/api/config', (req, res) => {
-  if (!PAYPAL_CLIENT_ID) return res.status(500).json({ error: 'PayPal Client ID not configured' });
+  if (!PAYPAL_CLIENT_ID) {
+    return res.status(500).json({ error: 'PayPal Client IDが設定されていません' });
+  }
   res.json({ clientId: PAYPAL_CLIENT_ID, mode: PAYPAL_MODE });
 });
 
+// Generate client token / User ID token for SDK (supports target_customer_id)
 app.get('/api/generate-client-token', async (req, res) => {
   try {
     const customer_id = req.query.customer_id || null;
-    console.log('generate-client-token request, customer_id=', customer_id);
+    if (customer_id) {
+      console.log('Request id_token for returning payer:', customer_id);
+    } else {
+      console.log('Request id_token for new payer');
+    }
+
     const tokens = await generateUserIdToken(customer_id);
     res.json({ id_token: tokens.id_token });
   } catch (err) {
-    console.error('generate-client-token error:', err.response?.data || err.message);
-    res.status(500).json({ error: 'generate-client-token failed', details: err.response?.data || err.message });
+    console.error('Client Token生成エラー:', err.response?.data || err.message);
+    res.status(500).json({ error: 'Client Token生成に失敗しました', details: err.response?.data || err.message });
   }
 });
 
+// Payment Tokens (vault) list
 app.get('/api/payment-tokens/:customerId', async (req, res) => {
   try {
     const { customerId } = req.params;
     const accessToken = await getPayPalAccessToken();
+
     const resp = await axios({
       method: 'get',
       url: `${PAYPAL_API_BASE}/v3/vault/payment-tokens?customer_id=${encodeURIComponent(customerId)}`,
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
     });
+
     res.json(resp.data);
   } catch (err) {
-    console.error('/api/payment-tokens error:', err.response?.data || err.message);
-    res.status(500).json({ error: 'payment-tokens failed', details: err.response?.data || err.message });
+    console.error('Payment Tokens取得エラー:', err.response?.data || err.message);
+    res.status(500).json({ error: 'Payment Tokens取得に失敗しました', details: err.response?.data || err.message });
   }
 });
 
-// Initial order creation (keeps vault-on-success behavior)
+// Original Order creation (initial flow). Keeps behavior to support saving in-vault.
 app.post('/api/orders', async (req, res) => {
   try {
     const accessToken = await getPayPalAccessToken();
     const { customerId, vaultId } = req.body || {};
 
     let orderPayload;
+
     if (vaultId) {
+      console.log('Create Order using saved payment method (vaultId):', vaultId);
       orderPayload = {
         intent: 'CAPTURE',
-        purchase_units: [{ amount: { currency_code: 'JPY', value: '100' }, description: 'PayPal Vault 商品（保存済み）' }],
-        payment_source: { token: { id: vaultId, type: 'PAYMENT_METHOD_TOKEN' } }
+        purchase_units: [{
+          amount: { currency_code: 'JPY', value: '100' },
+          description: 'PayPal Vault テスト商品（保存済み）'
+        }],
+        payment_source: {
+          token: { id: vaultId, type: 'PAYMENT_METHOD_TOKEN' }
+        }
       };
     } else {
+      console.log('Create Order for new purchase (with vault on success)');
       orderPayload = {
         intent: 'CAPTURE',
-        purchase_units: [{ amount: { currency_code: 'JPY', value: '100' }, description: 'PayPal Vault 商品' }],
+        purchase_units: [{
+          amount: { currency_code: 'JPY', value: '100' },
+          description: 'PayPal Vault テスト商品'
+        }],
         payment_source: {
           paypal: {
             experience_context: {
@@ -146,134 +179,137 @@ app.post('/api/orders', async (req, res) => {
               user_action: 'PAY_NOW'
             },
             attributes: {
-              vault: { store_in_vault: 'ON_SUCCESS', usage_type: 'MERCHANT', customer_type: 'CONSUMER' }
+              vault: {
+                store_in_vault: 'ON_SUCCESS',
+                usage_type: 'MERCHANT',
+                customer_type: 'CONSUMER'
+              }
             }
           }
         }
       };
-      if (customerId) orderPayload.payment_source.paypal.attributes.vault.customer_id = customerId;
+
+      if (customerId) {
+        orderPayload.payment_source.paypal.attributes.vault.customer_id = customerId;
+        console.log('Added customerId to vault attributes');
+      }
     }
 
     const resp = await axios({
       method: 'post',
       url: `${PAYPAL_API_BASE}/v2/checkout/orders`,
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'PayPal-Request-Id': `ORDER-${Date.now()}` },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'PayPal-Request-Id': `ORDER-${Date.now()}`
+      },
       data: orderPayload
     });
 
     res.json(resp.data);
   } catch (err) {
-    console.error('/api/orders error:', err.response?.data || err.message);
-    res.status(500).json({ error: 'Order creation failed', details: err.response?.data || err.message });
+    console.error('Order作成エラー:', err.response?.data || err.message);
+    res.status(500).json({ error: 'Order作成に失敗しました', details: err.response?.data || err.message });
   }
 });
 
-// ONECLICK: Create Order with payment token and immediately Capture. Idempotent-ish by requestId.
+// One-click endpoint: Create Order (with token) and immediately Capture (server-side)
 app.post('/api/orders/oneclick', async (req, res) => {
-  // We use requestId from header or generate one
-  const requestId = req.headers['x-idempotency-key'] || req.headers['paypal-request-id'] || randomUUID();
   try {
-    cleanupIdempotency();
-
-    // If we've processed this requestId, return cached result
-    const cached = idempotencyStore.get(requestId);
-    if (cached) {
-      console.log('oneclick: returning cached result for requestId', requestId);
-      return res.json({ orderId: cached.orderId, orderStatus: cached.orderStatus, capture: cached.capture });
-    }
-
     const accessToken = await getPayPalAccessToken();
     const { vaultId, customerId = null, amount = '100', currency = 'JPY', description = 'Vault One-click charge' } = req.body || {};
 
-    if (!vaultId) return res.status(400).json({ error: 'vaultId required' });
-    if (currency === 'JPY' && String(amount).includes('.')) return res.status(400).json({ error: 'JPY does not support decimals' });
+    if (!vaultId) {
+      return res.status(400).json({ error: 'vaultId が必要です（PAYMENT_METHOD_TOKEN）' });
+    }
 
-    // Create Order
+    // JPY integer check
+    if (currency === 'JPY' && String(amount).includes('.')) {
+      return res.status(400).json({ error: 'JPY は小数不可です。amount を整数文字列にしてください。' });
+    }
+
+    // 1) Create Order with payment_source.token
     const orderPayload = {
       intent: 'CAPTURE',
-      purchase_units: [{ amount: { currency_code: currency, value: String(amount) }, description }],
-      payment_source: { token: { id: vaultId, type: 'PAYMENT_METHOD_TOKEN' } }
+      purchase_units: [{
+        amount: { currency_code: currency, value: String(amount) },
+        description
+      }],
+      payment_source: {
+        token: { id: vaultId, type: 'PAYMENT_METHOD_TOKEN' }
+      }
     };
 
-    console.log('oneclick: creating order', { requestId, vaultId, customerId, amount, currency });
+    console.log('ONECLICK: creating order for vaultId', vaultId);
     const createResp = await axios({
       method: 'post',
       url: `${PAYPAL_API_BASE}/v2/checkout/orders`,
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'PayPal-Request-Id': requestId },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'PayPal-Request-Id': `ONECLICK-ORDER-${Date.now()}`
+      },
       data: orderPayload
     });
 
     const orderId = createResp.data.id;
-    console.log('oneclick: order created', orderId);
+    console.log('ONECLICK: order created', orderId, createResp.data.status);
 
-    // Capture
-    try {
-      const captureResp = await axios({
-        method: 'post',
-        url: `${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`,
-        headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'PayPal-Request-Id': `CAPTURE-${requestId}` },
-        data: {}
-      });
+    // 2) Capture immediately
+    const captureResp = await axios({
+      method: 'post',
+      url: `${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`,
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'PayPal-Request-Id': `ONECLICK-CAPTURE-${Date.now()}`
+      },
+      data: {}
+    });
 
-      const capture = captureResp.data;
-      console.log('oneclick: capture succeeded', orderId, capture.status);
+    console.log('ONECLICK: capture done', captureResp.data.status);
 
-      // Cache result
-      idempotencyStore.set(requestId, { orderId, orderStatus: createResp.data.status, capture, createdAt: Date.now() });
-
-      return res.json({ orderId, orderStatus: createResp.data.status, capture });
-    } catch (capErr) {
-      // If capture failed due to ORDER_ALREADY_CAPTURED, treat as success
-      const capData = capErr.response?.data;
-      if (capData && capData.name === 'UNPROCESSABLE_ENTITY') {
-        const already = (capData.details || []).some(d => d.issue === 'ORDER_ALREADY_CAPTURED');
-        if (already) {
-          console.warn('oneclick: capture reported ORDER_ALREADY_CAPTURED, treating as success', capData);
-          // Try to GET the order to fetch capture info (or return createResp as fallback)
-          try {
-            const orderResp = await axios({
-              method: 'get',
-              url: `${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}`,
-              headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
-            });
-            const capture = orderResp.data.purchase_units?.[0]?.payments?.captures?.[0] || null;
-            idempotencyStore.set(requestId, { orderId, orderStatus: orderResp.data.status, capture, createdAt: Date.now() });
-            return res.json({ orderId, orderStatus: orderResp.data.status, capture });
-          } catch (getErr) {
-            console.error('oneclick: failed to GET order after ORDER_ALREADY_CAPTURED', getErr.response?.data || getErr.message);
-            idempotencyStore.set(requestId, { orderId, orderStatus: createResp.data.status, capture: null, createdAt: Date.now() });
-            return res.json({ orderId, orderStatus: createResp.data.status, capture: null });
-          }
-        }
-      }
-      console.error('oneclick capture error:', capErr.response?.data || capErr.message);
-      return res.status(500).json({ error: 'oneclick capture failed', details: capErr.response?.data || capErr.message });
-    }
-
+    res.json({
+      orderId,
+      orderStatus: createResp.data.status,
+      capture: captureResp.data
+    });
   } catch (err) {
-    console.error('oneclick error:', err.response?.data || err.message);
-    return res.status(500).json({ error: 'oneclick failed', details: err.response?.data || err.message });
+    console.error('ONECLICK ERROR:', {
+      message: err.message,
+      status: err.response?.status,
+      data: err.response?.data
+    });
+    res.status(500).json({ error: 'oneclick failed', details: err.response?.data || err.message });
   }
 });
 
-// Capture endpoint (for non-oneclick flows)
+// Capture endpoint (used by SDK onApprove for first-time flow)
 app.post('/api/orders/:orderId/capture', async (req, res) => {
   try {
     const { orderId } = req.params;
     const accessToken = await getPayPalAccessToken();
+
     const resp = await axios({
       method: 'post',
       url: `${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`,
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'PayPal-Request-Id': `CAPTURE-${Date.now()}` },
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'PayPal-Request-Id': `CAPTURE-${Date.now()}`
+      },
       data: {}
     });
+
     res.json(resp.data);
   } catch (err) {
-    console.error('capture endpoint error:', err.response?.data || err.message);
-    res.status(500).json({ error: 'capture failed', details: err.response?.data || err.message });
+    console.error('Capture エラー:', err.response?.data || err.message);
+    res.status(500).json({ error: 'Captureに失敗しました', details: err.response?.data || err.message });
   }
 });
 
 app.listen(PORT, () => {
-  console.log('Server listening on', PORT, 'mode=', PAYPAL_MODE);
+  console.log('='.repeat(50));
+  console.log(`Server running on port ${PORT} (mode=${PAYPAL_MODE})`);
+  console.log('='.repeat(50));
 });
