@@ -94,6 +94,17 @@ app.post('/api/orders', async (req, res) => {
     const token = await getAccessToken();
     const { customerId } = req.body || {};
 
+    const experienceContext = {
+      payment_method_preference: 'IMMEDIATE_PAYMENT_REQUIRED',
+      brand_name: 'PayPal Vault Demo',
+      locale: 'ja-JP',
+      landing_page: 'LOGIN',
+      shipping_preference: 'NO_SHIPPING',
+      user_action: 'PAY_NOW',
+      return_url: `${req.protocol}://${req.get('host')}/success`,
+      cancel_url: `${req.protocol}://${req.get('host')}/cancel`
+    };
+
     const payload = {
       intent: 'CAPTURE',
       purchase_units: [{
@@ -102,30 +113,23 @@ app.post('/api/orders', async (req, res) => {
       }],
       payment_source: {
         paypal: {
-          experience_context: {
-            payment_method_preference: 'IMMEDIATE_PAYMENT_REQUIRED',
-            brand_name: 'PayPal Vault Demo',
-            locale: 'ja-JP',
-            landing_page: 'LOGIN',
-            shipping_preference: 'NO_SHIPPING',
-            user_action: 'PAY_NOW',
-            return_url: `${req.protocol}://${req.get('host')}/success`,
-            cancel_url: `${req.protocol}://${req.get('host')}/cancel`
-          },
-          attributes: {
-            vault: {
-              store_in_vault: 'ON_SUCCESS',
-              usage_type: 'MERCHANT',
-              customer_type: 'CONSUMER',
-              // Returning Payer の場合：既存 customer に Vault を紐付ける
-              ...(customerId && { customer_id: customerId })
+          experience_context: experienceContext,
+          // 初回のみ: Vault保存の指示を付与
+          // 2回目以降 (customerId あり): 既にVault済みのため attributes 不要
+          ...(!customerId && {
+            attributes: {
+              vault: {
+                store_in_vault: 'ON_SUCCESS',
+                usage_type: 'MERCHANT',
+                customer_type: 'CONSUMER'
+              }
             }
-          }
+          })
         }
       }
     };
 
-    console.log(customerId ? `Order: Returning Payer (${customerId})` : 'Order: New Payer');
+    console.log(customerId ? `Order: Returning Payer (${customerId})` : 'Order: New Payer (Vault保存あり)');
 
     const resp = await axios.post(
       `${PAYPAL_API_BASE}/v2/checkout/orders`,
