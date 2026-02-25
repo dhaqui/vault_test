@@ -1,249 +1,357 @@
+
 <!doctype html>
 <html lang="ja">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>PayPal Vault Demo — Returning + One-click</title>
+  <title>PayPal Vault Demo</title>
   <style>
-    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;padding:24px;background:#f6f8fb}
-    .card{max-width:900px;margin:0 auto;background:#fff;padding:20px;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,.06)}
-    input{padding:8px;border-radius:6px;border:1px solid #ccc;width:100%}
-    button{padding:10px 14px;border-radius:8px;border:0;cursor:pointer}
-    .primary{background:#0070ba;color:#fff}
-    .muted{background:#eef2f6}
-    pre{background:#0b1220;color:#e6eef8;padding:12px;border-radius:8px;overflow:auto;max-height:400px}
-    .info{margin:12px 0;color:#333}
-    code{background:#eef2f6;padding:2px 6px;border-radius:4px;font-size:13px}
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .container { max-width: 720px; margin: 0 auto; }
+    .card {
+      background: #fff;
+      border-radius: 10px;
+      padding: 24px;
+      margin-bottom: 16px;
+      box-shadow: 0 4px 18px rgba(0,0,0,.08);
+    }
+    h1 { margin-bottom: 6px; }
+    h2 { font-size: 16px; margin-bottom: 14px; color: #333; }
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: bold;
+      margin-left: 8px;
+      vertical-align: middle;
+    }
+    .badge-new      { background: #e8f5e9; color: #2e7d32; }
+    .badge-returning { background: #e3f2fd; color: #1565c0; }
+    .info-box {
+      background: #f5f7fa;
+      border-left: 4px solid #667eea;
+      border-radius: 6px;
+      padding: 12px 14px;
+      margin-bottom: 10px;
+      font-size: 13px;
+    }
+    .info-box .label { font-weight: bold; color: #444; margin-bottom: 4px; }
+    .info-box .value { font-family: monospace; color: #555; word-break: break-all; }
+    .alert { padding: 12px 16px; border-radius: 8px; margin-bottom: 12px; font-size: 14px; }
+    .alert-success { background: #d4edda; color: #155724; }
+    .alert-info    { background: #d1ecf1; color: #0c5460; }
+    .alert-danger  { background: #f8d7da; color: #721c24; }
+    .debug-log {
+      background: #0b1220;
+      color: #d4d4d4;
+      padding: 12px;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 12px;
+      max-height: 320px;
+      overflow-y: auto;
+      line-height: 1.7;
+    }
+    .debug-log .ts      { color: #608b4e; }
+    .debug-log .success { color: #4ec9b0; }
+    .debug-log .error   { color: #f48771; }
+    .debug-log .info    { color: #9cdcfe; }
+    .debug-log .vault   { color: #dcdcaa; font-weight: bold; }
+    #paypal-button-container { min-height: 50px; }
+    .clear-btn {
+      display: block;
+      margin: 8px auto 0;
+      padding: 10px 28px;
+      background: #e53935;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .clear-btn:hover { background: #c62828; }
+    pre {
+      background: #f5f7fa;
+      padding: 12px;
+      border-radius: 6px;
+      overflow-x: auto;
+      font-size: 12px;
+    }
   </style>
 </head>
 <body>
+<div class="container">
+
+  <!-- Header -->
   <div class="card">
-    <h1>PayPal Vault — Returning + One-click</h1>
-    <p class="info">Vault IDがある場合はボタンクリックでサーバー側 Create→Capture を完結させ、モーダルを表示しません。</p>
-
-    <div style="margin-bottom:12px">
-      <button id="clearStorage" class="muted">LocalStorage クリア</button>
-    </div>
-
-    <div style="margin-bottom:12px">
-      <strong>保存済み情報（localStorage）</strong>
-      <div id="savedInfo" style="margin-top:8px"></div>
-    </div>
-
-    <div id="paypal-button-container" style="margin-bottom:20px;min-height:120px"></div>
-
-    <div style="margin-top:12px">
-      <button id="oneclickDirect" class="primary">ワンクリック決済（Vaultがある場合）</button>
-    </div>
-
-    <h3 style="margin-top:20px">ログ / 結果</h3>
-    <pre id="log">準備中...</pre>
+    <h1>💳 PayPal Vault Demo</h1>
+    <p style="color:#666;font-size:14px;margin-top:6px">
+      初回：PayPalで決済 → Vault保存<br>
+      2回目以降：モーダルに保存済みアカウントが表示された状態で開く（公式 Returning Payer フロー）
+    </p>
   </div>
 
-<script>
-(async function(){
-  const logEl = document.getElementById('log');
-  function log(...args){
-    logEl.textContent = new Date().toLocaleTimeString() + ' ' + args.join(' ') + '\n' + logEl.textContent;
-  }
+  <!-- 保存済み情報 -->
+  <div id="saved-section" style="display:none">
+    <div class="card">
+      <h2>👤 保存済みVault情報</h2>
+      <div id="saved-content"></div>
+    </div>
+  </div>
 
+  <!-- ログ -->
+  <div class="card">
+    <h2>📋 ログ</h2>
+    <div class="debug-log" id="log-area">
+      <span class="info">初期化中...</span>
+    </div>
+  </div>
+
+  <!-- ステータス -->
+  <div id="status"></div>
+
+  <!-- PayPal ボタン -->
+  <div class="card">
+    <h2 id="btn-title">PayPalで支払う</h2>
+    <p id="btn-desc" style="font-size:13px;color:#666;margin-bottom:14px"></p>
+    <div id="paypal-button-container"></div>
+  </div>
+
+  <!-- Capture レスポンス詳細 -->
+  <div id="result-section" style="display:none">
+    <div class="card">
+      <h2>📄 Captureレスポンス</h2>
+      <pre id="result-json"></pre>
+    </div>
+  </div>
+
+  <button class="clear-btn" onclick="clearData()">🗑️ テストデータをクリア</button>
+
+</div>
+<script>
+(async () => {
+
+  // ===== State =====
   let customerId = localStorage.getItem('paypal_customer_id') || null;
   let vaultId    = localStorage.getItem('paypal_vault_id')    || null;
-  let payerId    = localStorage.getItem('paypal_payer_id')    || null;
-  let accountId  = localStorage.getItem('paypal_account_id') || null;
 
-  function renderSavedInfo(){
-    const el = document.getElementById('savedInfo');
-    el.innerHTML = '';
-    if (vaultId)    el.innerHTML += `<div>🔐 vaultId: <code>${vaultId}</code></div>`;
-    if (customerId) el.innerHTML += `<div>👤 customerId: <code>${customerId}</code></div>`;
-    if (payerId)    el.innerHTML += `<div>payerId: <code>${payerId}</code></div>`;
-    if (accountId)  el.innerHTML += `<div>accountId: <code>${accountId}</code></div>`;
-    if (!vaultId && !customerId) el.innerHTML = '<div>保存なし</div>';
-  }
-  renderSavedInfo();
-
-  // Vaultレスポンスからローカルストレージを更新する共通ユーティリティ
-  function saveVaultInfo(capture) {
-    const vaultInfo    = capture?.payment_source?.paypal?.attributes?.vault;
-    const payerInfo    = capture?.payer;
-    const paypalSource = capture?.payment_source?.paypal;
-    if (vaultInfo?.id)          { vaultId    = vaultInfo.id;              localStorage.setItem('paypal_vault_id', vaultId); }
-    if (vaultInfo?.customer?.id){ customerId  = vaultInfo.customer.id;    localStorage.setItem('paypal_customer_id', customerId); }
-    if (payerInfo?.payer_id)    { payerId     = payerInfo.payer_id;       localStorage.setItem('paypal_payer_id', payerId); }
-    if (paypalSource?.account_id){ accountId  = paypalSource.account_id; localStorage.setItem('paypal_account_id', accountId); }
-    renderSavedInfo();
+  // ===== Logging =====
+  function log(msg, type = 'info') {
+    const el = document.getElementById('log-area');
+    const ts = new Date().toLocaleTimeString('ja-JP', { hour:'2-digit', minute:'2-digit', second:'2-digit', fractionalSecondDigits:2 });
+    const div = document.createElement('div');
+    div.innerHTML = `<span class="ts">[${ts}]</span> <span class="${type}">${msg}</span>`;
+    el.insertBefore(div, el.firstChild);
   }
 
-  document.getElementById('clearStorage').onclick = () => {
-    localStorage.clear();
-    customerId = vaultId = payerId = accountId = null;
-    renderSavedInfo();
-    log('LocalStorage cleared');
-  };
+  // ===== 保存済み情報表示 =====
+  function renderSaved() {
+    if (!customerId && !vaultId) return;
+    document.getElementById('saved-section').style.display = 'block';
+    let html = '';
+    if (vaultId) {
+      html += `<div class="info-box" style="border-left-color:#0070ba">
+        <div class="label">🔐 Vault ID（Payment Token）</div>
+        <div class="value">${vaultId}</div>
+      </div>`;
+    }
+    if (customerId) {
+      html += `<div class="info-box">
+        <div class="label">Customer ID</div>
+        <div class="value">${customerId}</div>
+      </div>`;
+    }
+    document.getElementById('saved-content').innerHTML = html;
+  }
 
-  // --- SDK 読み込み ---
-  const cfgResp = await fetch('/api/config');
-  const cfg = await cfgResp.json();
+  // ===== UI 更新 =====
+  function updateButtonArea() {
+    if (customerId) {
+      document.getElementById('btn-title').innerHTML =
+        '🔄 PayPalで支払う <span class="badge badge-returning">Returning Payer</span>';
+      document.getElementById('btn-desc').textContent =
+        '保存済みのPayPalアカウントがモーダルに表示されます。';
+    } else {
+      document.getElementById('btn-title').innerHTML =
+        '🆕 PayPalで支払う <span class="badge badge-new">初回</span>';
+      document.getElementById('btn-desc').textContent =
+        'PayPalで支払うとアカウントが保存され、次回から簡単に支払えます。';
+    }
+  }
 
-  let tokenUrl = '/api/generate-client-token';
-  if (customerId) tokenUrl += `?customer_id=${encodeURIComponent(customerId)}`;
-  const tokenJson = await (await fetch(tokenUrl)).json();
-  log('id_token obtained');
+  function showStatus(msg, type = 'info') {
+    document.getElementById('status').innerHTML =
+      `<div class="alert alert-${type}">${msg}</div>`;
+  }
 
-  // Payment Tokens確認
-  if (customerId) {
+  // ===== Payment Tokens 確認 =====
+  async function checkPaymentTokens() {
+    if (!customerId) return;
     try {
-      const pt = await (await fetch(`/api/payment-tokens/${encodeURIComponent(customerId)}`)).json();
-      if (pt.payment_tokens?.length > 0) {
-        vaultId = pt.payment_tokens[0].id;
+      log('Payment Tokens 確認中...');
+      const resp = await fetch(`/api/payment-tokens/${encodeURIComponent(customerId)}`);
+      const data = await resp.json();
+      if (data.payment_tokens?.length > 0) {
+        vaultId = data.payment_tokens[0].id;
         localStorage.setItem('paypal_vault_id', vaultId);
-        log('Found vault token:', vaultId);
-        renderSavedInfo();
+        log(`✓ Vault済みトークン確認: ${vaultId}`, 'vault');
+        renderSaved();
+      } else {
+        log('Vault済みトークンなし', 'info');
       }
-    } catch(e) { log('payment-tokens error:', e.message); }
+    } catch (e) {
+      log(`Payment Tokens エラー: ${e.message}`, 'error');
+    }
   }
 
-  await new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = `https://www.paypal.com/sdk/js?client-id=${cfg.clientId}&vault=true&intent=capture&locale=ja_JP&currency=JPY`;
-    script.setAttribute('data-user-id-token', tokenJson.id_token);
-    script.onload  = () => { log('PayPal SDK loaded'); resolve(); };
-    script.onerror = reject;
-    document.head.appendChild(script);
-  });
+  // ===== SDK 読み込み =====
+  async function loadSDK() {
+    log('SDK 初期化開始');
 
-  // --- PayPal ボタン描画 ---
+    const cfg = await (await fetch('/api/config')).json();
 
-  // Vault oneclick処理の完了フラグ
-  // onClick で決済が完結した場合 true にすることで
-  // createOrder / onApprove / onError の後続処理をすべてスキップする
-  let oneclickDone = false;
+    // Returning Payer の場合は target_customer_id を渡して id_token を取得
+    // → SDK が保存済みアカウントをモーダルに表示してくれる
+    const tokenUrl = customerId
+      ? `/api/generate-client-token?customer_id=${encodeURIComponent(customerId)}`
+      : '/api/generate-client-token';
 
-  paypal.Buttons({
-    style: { layout: 'vertical', label: 'paypal' },
-    vault: customerId ? { customer_id: customerId } : undefined,
+    const { id_token } = await (await fetch(tokenUrl)).json();
+    log(customerId ? `Returning Payer 用 id_token 取得` : '新規 Payer 用 id_token 取得', 'vault');
 
-    // ===== onClick =====
-    // vaultId がある場合はここで決済を完結させ actions.reject() でモーダルをブロック
-    onClick: async (data, actions) => {
-      if (!vaultId) {
-        // 初回：通常フローに進む
-        return actions.resolve();
-      }
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      // vault=true を付けることで SDK が Vault 対応モードで動作する
+      script.src = `https://www.paypal.com/sdk/js?client-id=${cfg.clientId}&vault=true&intent=capture&locale=ja_JP&currency=JPY`;
+      script.setAttribute('data-user-id-token', id_token);
+      script.onload  = () => { log('✓ PayPal SDK 読み込み完了', 'success'); resolve(); };
+      script.onerror = reject;
+      document.head.appendChild(script);
+    });
+  }
 
-      log('onClick: vaultId あり → oneclick 決済開始');
-      try {
-        const resp = await fetch('/api/orders/oneclick', {
+  // ===== PayPal ボタン初期化 =====
+  function initButtons() {
+    log('ボタン初期化中...');
+
+    paypal.Buttons({
+      style: { layout: 'vertical', label: 'paypal' },
+
+      // Returning Payer の場合: customer_id を渡すことで
+      // モーダル内に保存済みアカウントが選択済みで表示される
+      vault: customerId ? { customer_id: customerId } : undefined,
+
+      // Order 作成
+      // 初回・2回目ともに同じエンドポイント。
+      // customerId がある場合はサーバー側で vault.customer_id に紐付ける
+      createOrder: async () => {
+        log('Order 作成中...');
+        showStatus('注文を作成中...');
+        const resp = await fetch('/api/orders', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ vaultId, customerId, amount: '100', currency: 'JPY' })
+          body: JSON.stringify({ customerId })
         });
-        const body = await resp.json();
+        const data = await resp.json();
+        if (!resp.ok) throw new Error(data.error || JSON.stringify(data));
+        log(`✓ Order 作成: ${data.id}`, 'success');
+        return data.id;
+      },
 
-        if (!resp.ok) {
-          log('oneclick 失敗:', JSON.stringify(body));
-          // 失敗してもモーダルは出さない（onError が出ないよう reject 前にフラグを立てない）
-          alert('決済に失敗しました: ' + (body.error || JSON.stringify(body)));
-          return actions.reject();
+      // ユーザーが PayPal モーダルで承認後
+      onApprove: async (data) => {
+        log('Capture 開始...');
+        showStatus('決済処理中...');
+        const resp    = await fetch(`/api/orders/${data.orderID}/capture`, { method: 'POST' });
+        const capture = await resp.json();
+        if (!resp.ok) throw new Error(capture.error || JSON.stringify(capture));
+
+        log('✓ Capture 完了', 'success');
+
+        // Vault 情報を保存
+        const vaultInfo    = capture.payment_source?.paypal?.attributes?.vault;
+        const paypalSource = capture.payment_source?.paypal;
+
+        log('='.repeat(40), 'vault');
+        log('🔐 Vault 保存情報', 'vault');
+
+        if (vaultInfo) {
+          log(`Vault ID: ${vaultInfo.id}`, 'vault');
+          log(`Vault Status: ${vaultInfo.status}`, 'vault');
+          log(`Customer ID: ${vaultInfo.customer?.id}`, 'vault');
+        }
+        if (paypalSource) {
+          log(`Email: ${paypalSource.email_address}`, 'info');
+          log(`Account ID: ${paypalSource.account_id}`, 'info');
+        }
+        log('='.repeat(40), 'vault');
+
+        if (vaultInfo?.id) {
+          vaultId = vaultInfo.id;
+          localStorage.setItem('paypal_vault_id', vaultId);
+        }
+        if (vaultInfo?.customer?.id) {
+          customerId = vaultInfo.customer.id;
+          localStorage.setItem('paypal_customer_id', customerId);
         }
 
-        log('oneclick 成功 orderId:', body.orderId, '| capture status:', body.capture?.status);
-        saveVaultInfo(body.capture);
+        renderSaved();
+        showStatus('✅ 決済完了！3秒後にリロードします...', 'success');
 
-        // ✅ 決済完了フラグを立ててから reject
-        // → createOrder / onApprove / onError がスキップされる
-        oneclickDone = true;
-        await actions.reject();
+        // Capture レスポンスを表示
+        document.getElementById('result-section').style.display = 'block';
+        document.getElementById('result-json').textContent = JSON.stringify(capture, null, 2);
 
-        alert('決済が完了しました');
+        setTimeout(() => location.reload(), 3000);
+      },
 
-      } catch(err) {
-        log('onClick error:', err.message);
-        alert('エラー: ' + err.message);
-        await actions.reject();
-      }
-    },
+      onCancel: () => {
+        log('決済がキャンセルされました');
+        showStatus('決済がキャンセルされました');
+      },
 
-    // ===== createOrder =====
-    // onClick で oneclick が完結した場合は呼ばれても何もしない（SDKが内部でcallすることがあるため）
-    createOrder: async () => {
-      if (oneclickDone) {
-        // oneclickDone=true のときはここに来ても abort させる
-        log('createOrder: oneclick 完了済みのためスキップ');
-        throw new Error('ONECLICK_DONE');
+      onError: (err) => {
+        log(`エラー: ${err?.message || JSON.stringify(err)}`, 'error');
+        showStatus('エラーが発生しました: ' + (err?.message || err), 'danger');
       }
 
-      // 初回通常フロー
-      log('createOrder: 初回フロー → /api/orders');
-      const resp = await fetch('/api/orders', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ customerId })
-      });
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || JSON.stringify(data));
-      log('order created:', data.id);
-      return data.id;
-    },
+    }).render('#paypal-button-container')
+      .then(() => log('✓ PayPal ボタン表示完了', 'success'));
+  }
 
-    // ===== onApprove =====
-    // 初回フロー専用。oneclick 完了後は呼ばれない（createOrder が throw するため）
-    onApprove: async (data) => {
-      if (oneclickDone) {
-        log('onApprove: oneclick 完了済みのためスキップ');
-        return;
-      }
+  function clearData() {
+    if (!confirm('保存データをクリアしますか？')) return;
+    localStorage.clear();
+    location.reload();
+  }
 
-      log('onApprove: capture 開始 orderId:', data.orderID);
-      const resp    = await fetch(`/api/orders/${data.orderID}/capture`, { method: 'POST' });
-      const capture = await resp.json();
-      if (!resp.ok) throw new Error(capture.error || JSON.stringify(capture));
+  // ===== 初期化 =====
+  log('ページ読み込み完了');
 
-      log('capture 成功:', capture.status);
-      saveVaultInfo(capture);
-    },
+  if (customerId || vaultId) {
+    log('--- 保存済みユーザー検出 ---', 'vault');
+    if (customerId) log(`Customer ID: ${customerId}`, 'vault');
+    if (vaultId)    log(`Vault ID: ${vaultId}`, 'vault');
+    renderSaved();
+  }
 
-    // ===== onError =====
-    // oneclickDone の場合は actions.reject() による意図的なエラーなので無視
-    onError: (err) => {
-      if (oneclickDone) {
-        log('onError: oneclick 完了後の想定内エラー（無視）');
-        return;
-      }
-      log('PayPal Buttons error:', err?.message || JSON.stringify(err));
-    }
+  await checkPaymentTokens();
+  updateButtonArea();
 
-  }).render('#paypal-button-container')
-    .then(() => log('PayPal buttons rendered'));
-
-  // --- 直接ワンクリックボタン ---
-  document.getElementById('oneclickDirect').onclick = async () => {
-    if (!vaultId) {
-      alert('Vault IDがありません。まず初回購入を完了してください。');
-      return;
-    }
-    log('直接ワンクリック実行');
-    try {
-      const resp = await fetch('/api/orders/oneclick', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ vaultId, customerId, amount: '100', currency: 'JPY' })
-      });
-      const data = await resp.json();
-      if (!resp.ok) {
-        log('oneclick direct 失敗:', JSON.stringify(data));
-        alert('Failed: ' + (data.error || JSON.stringify(data)));
-        return;
-      }
-      log('oneclick direct 成功:', JSON.stringify(data));
-      saveVaultInfo(data.capture);
-      alert('決済完了');
-    } catch(e) {
-      log('oneclick direct error:', e.message);
-      alert('エラー: ' + e.message);
-    }
-  };
+  try {
+    await loadSDK();
+    initButtons();
+  } catch (e) {
+    log(`初期化エラー: ${e.message}`, 'error');
+    showStatus('初期化エラー: ' + e.message, 'danger');
+  }
 
 })();
 </script>
