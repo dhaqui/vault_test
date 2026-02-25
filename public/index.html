@@ -1,311 +1,265 @@
-// server.js
-const express = require('express');
-const axios = require('axios');
-const dotenv = require('dotenv');
-const cors = require('cors');
-const path = require('path');
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PayPal Vault Demo — Returning + One-click</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;padding:24px;background:#f6f8fb}
+    .card{max-width:900px;margin:0 auto;background:#fff;padding:20px;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,.06)}
+    .row{display:flex;gap:12px}
+    input{padding:8px;border-radius:6px;border:1px solid #ccc;width:100%}
+    button{padding:10px 14px;border-radius:8px;border:0;cursor:pointer}
+    .primary{background:#0070ba;color:#fff}
+    .muted{background:#eef2f6}
+    pre{background:#0b1220;color:#e6eef8;padding:12px;border-radius:8px;overflow:auto}
+    .info{margin:12px 0;color:#333}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>PayPal Vault — Returning + One-click</h1>
+    <p class="info">保存済み（Vault）をボタンに表示しつつ、Vault IDがあればボタン押下でサーバ側 Create→Capture を走らせてワンクリック決済を完了します。</p>
 
-dotenv.config();
+    <div style="margin-bottom:12px">
+      <button id="clearStorage" class="muted">LocalStorage クリア</button>
+    </div>
 
-const app = express();
-const PORT = process.env.PORT || 3000;
+    <div style="margin-bottom:12px">
+      <strong>保存済み情報（localStorage）</strong>
+      <div id="savedInfo" style="margin-top:8px"></div>
+    </div>
 
-const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
-const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
-const PAYPAL_MODE = process.env.PAYPAL_MODE || 'sandbox';
+    <div id="paypal-button-container" style="margin-bottom:20px; min-height:120px"></div>
 
-const PAYPAL_API_BASE =
-  PAYPAL_MODE === 'sandbox'
-    ? 'https://api-m.sandbox.paypal.com'
-    : 'https://api-m.paypal.com';
+    <div style="margin-top:12px">
+      <button id="oneclickDirect" class="primary">ワンクリック決済（Vaultがある場合）</button>
+    </div>
 
-app.use(cors());
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+    <h3 style="margin-top:20px">ログ / 結果</h3>
+    <pre id="log">準備中...</pre>
+  </div>
 
-// --- Utilities ---
-function requireEnv() {
-  if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
-    throw new Error('PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET が未設定です');
+<script>
+(async function(){
+  const logEl = document.getElementById('log');
+  function log(...args){ logEl.textContent = (new Date()).toLocaleTimeString() + ' ' + args.join(' ') + '\n' + logEl.textContent; }
+
+  // load saved
+  let customerId = localStorage.getItem('paypal_customer_id') || null;
+  let vaultId = localStorage.getItem('paypal_vault_id') || null;
+  let payerId = localStorage.getItem('paypal_payer_id') || null;
+  let accountId = localStorage.getItem('paypal_account_id') || null;
+
+  function renderSavedInfo(){
+    const cont = document.getElementById('savedInfo');
+    cont.innerHTML = '';
+    if (vaultId) cont.innerHTML += `<div>🔐 vaultId: <code>${vaultId}</code></div>`;
+    if (customerId) cont.innerHTML += `<div>👤 customerId: <code>${customerId}</code></div>`;
+    if (payerId) cont.innerHTML += `<div>payerId: <code>${payerId}</code></div>`;
+    if (accountId) cont.innerHTML += `<div>accountId: <code>${accountId}</code></div>`;
+    if (!vaultId && !customerId) cont.innerHTML = '<div>保存なし</div>';
   }
-}
+  renderSavedInfo();
 
-async function getPayPalAccessToken() {
-  requireEnv();
-  try {
-    const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
-    const resp = await axios({
-      method: 'post',
-      url: `${PAYPAL_API_BASE}/v1/oauth2/token`,
-      headers: {
-        Authorization: `Basic ${auth}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      data: 'grant_type=client_credentials',
-    });
-    return resp.data.access_token;
-  } catch (err) {
-    console.error('Access Token取得エラー:', err.response?.data || err.message);
-    throw err;
+  document.getElementById('clearStorage').onclick = () => {
+    localStorage.clear();
+    customerId = vaultId = payerId = accountId = null;
+    renderSavedInfo();
+    log('LocalStorage cleared');
+  };
+
+  // 1) get config
+  const cfgResp = await fetch('/api/config');
+  const cfg = await cfgResp.json();
+  const CLIENT_ID = cfg.clientId;
+
+  // 2) If customerId present, request id_token with target_customer_id
+  let tokenUrl = '/api/generate-client-token';
+  if (customerId) tokenUrl += `?customer_id=${encodeURIComponent(customerId)}`;
+
+  const tokenResp = await fetch(tokenUrl);
+  const tokenJson = await tokenResp.json();
+  const ID_TOKEN = tokenJson.id_token;
+  log('id_token obtained');
+
+  // 3) Load PayPal SDK with vault=true and data-user-id-token
+  const script = document.createElement('script');
+  script.src = `https://www.paypal.com/sdk/js?client-id=${CLIENT_ID}&vault=true&intent=capture&locale=ja_JP&currency=JPY`;
+  script.setAttribute('data-user-id-token', ID_TOKEN);
+  document.head.appendChild(script);
+
+  script.onload = () => {
+    log('PayPal SDK loaded');
+    renderButtons();
+  };
+
+  script.onerror = (e) => {
+    log('PayPal SDK load error', e.message || e);
+  };
+
+  // Check vaulted payment tokens (populate vaultId if available)
+  async function checkVaultedPayments(){
+    if (!customerId) return;
+    try {
+      const resp = await fetch(`/api/payment-tokens/${encodeURIComponent(customerId)}`);
+      const json = await resp.json();
+      if (json.payment_tokens && json.payment_tokens.length > 0){
+        vaultId = json.payment_tokens[0].id;
+        localStorage.setItem('paypal_vault_id', vaultId);
+        log('Found vault token:', vaultId);
+        renderSavedInfo();
+      } else {
+        log('No payment_tokens for customer');
+      }
+    } catch (e) {
+      log('Error fetching payment tokens', e.message || e);
+    }
   }
-}
 
-// Generate User ID token (response_type=id_token). If customerId provided, attach as target_customer_id
-async function generateUserIdToken(customerId = null) {
-  requireEnv();
-  try {
-    const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
-    let postData = 'grant_type=client_credentials&response_type=id_token';
-    if (customerId) {
-      postData += `&target_customer_id=${encodeURIComponent(customerId)}`;
-      console.log(`Generating id_token for returning payer (target_customer_id=${customerId})`);
-    } else {
-      console.log('Generating id_token for new payer');
+  await checkVaultedPayments();
+
+  // Render PayPal Buttons
+  function renderButtons(){
+    if (!window.paypal) {
+      log('paypal SDK not ready');
+      return;
     }
 
-    const resp = await axios({
-      method: 'post',
-      url: `${PAYPAL_API_BASE}/v1/oauth2/token`,
-      headers: {
-        Authorization: `Basic ${auth}`,
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      data: postData,
-    });
-
-    return {
-      access_token: resp.data.access_token,
-      id_token: resp.data.id_token,
-    };
-  } catch (err) {
-    console.error('User ID Token取得エラー:', err.response?.data || err.message);
-    throw err;
-  }
-}
-
-// --- Routes ---
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'OK',
-    mode: PAYPAL_MODE,
-    clientIdConfigured: !!PAYPAL_CLIENT_ID,
-    clientSecretConfigured: !!PAYPAL_CLIENT_SECRET,
-  });
-});
-
-app.get('/api/config', (req, res) => {
-  if (!PAYPAL_CLIENT_ID) {
-    return res.status(500).json({ error: 'PayPal Client IDが設定されていません' });
-  }
-  res.json({ clientId: PAYPAL_CLIENT_ID, mode: PAYPAL_MODE });
-});
-
-// Generate client token / User ID token for SDK (supports target_customer_id)
-app.get('/api/generate-client-token', async (req, res) => {
-  try {
-    const customer_id = req.query.customer_id || null;
-    if (customer_id) {
-      console.log('Request id_token for returning payer:', customer_id);
-    } else {
-      console.log('Request id_token for new payer');
-    }
-
-    const tokens = await generateUserIdToken(customer_id);
-    res.json({ id_token: tokens.id_token });
-  } catch (err) {
-    console.error('Client Token生成エラー:', err.response?.data || err.message);
-    res.status(500).json({ error: 'Client Token生成に失敗しました', details: err.response?.data || err.message });
-  }
-});
-
-// Payment Tokens (vault) list
-app.get('/api/payment-tokens/:customerId', async (req, res) => {
-  try {
-    const { customerId } = req.params;
-    const accessToken = await getPayPalAccessToken();
-
-    const resp = await axios({
-      method: 'get',
-      url: `${PAYPAL_API_BASE}/v3/vault/payment-tokens?customer_id=${encodeURIComponent(customerId)}`,
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-    });
-
-    res.json(resp.data);
-  } catch (err) {
-    console.error('Payment Tokens取得エラー:', err.response?.data || err.message);
-    res.status(500).json({ error: 'Payment Tokens取得に失敗しました', details: err.response?.data || err.message });
-  }
-});
-
-// Original Order creation (initial flow). Keeps behavior to support saving in-vault.
-app.post('/api/orders', async (req, res) => {
-  try {
-    const accessToken = await getPayPalAccessToken();
-    const { customerId, vaultId } = req.body || {};
-
-    let orderPayload;
-
+    // update UI title based on vault existence
     if (vaultId) {
-      console.log('Create Order using saved payment method (vaultId):', vaultId);
-      orderPayload = {
-        intent: 'CAPTURE',
-        purchase_units: [{
-          amount: { currency_code: 'JPY', value: '100' },
-          description: 'PayPal Vault テスト商品（保存済み）'
-        }],
-        payment_source: {
-          token: { id: vaultId, type: 'PAYMENT_METHOD_TOKEN' }
-        }
-      };
-    } else {
-      console.log('Create Order for new purchase (with vault on success)');
-      orderPayload = {
-        intent: 'CAPTURE',
-        purchase_units: [{
-          amount: { currency_code: 'JPY', value: '100' },
-          description: 'PayPal Vault テスト商品'
-        }],
-        payment_source: {
-          paypal: {
-            experience_context: {
-              payment_method_preference: 'IMMEDIATE_PAYMENT_REQUIRED',
-              brand_name: 'PayPal Vault Demo',
-              locale: 'ja-JP',
-              landing_page: 'LOGIN',
-              shipping_preference: 'NO_SHIPPING',
-              user_action: 'PAY_NOW'
-            },
-            attributes: {
-              vault: {
-                store_in_vault: 'ON_SUCCESS',
-                usage_type: 'MERCHANT',
-                customer_type: 'CONSUMER'
-              }
-            }
+      const desc = document.createElement('div');
+      desc.innerHTML = '<strong>⚡ ワンクリック（保存済み）で支払います</strong>';
+      document.getElementById('paypal-button-container').appendChild(desc);
+    }
+
+    paypal.Buttons({
+      style: { layout: 'vertical', label: 'paypal' },
+
+      // Give SDK the customer_id so it displays saved payment methods
+      vault: customerId ? { customer_id: customerId } : undefined,
+
+      createOrder: async () => {
+        // If vaultId exists, call oneclick endpoint (server does create+capture)
+        if (vaultId) {
+          log('createOrder -> calling /api/orders/oneclick (vaultId present)');
+          const resp = await fetch('/api/orders/oneclick', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ vaultId, customerId, amount: '100', currency: 'JPY' })
+          });
+          const data = await resp.json();
+          if (!resp.ok) {
+            log('oneclick error', JSON.stringify(data));
+            throw new Error(data.error || JSON.stringify(data));
           }
+          // We return the orderId (already captured). SDK may or may not call onApprove.
+          log('oneclick success, order:', data.orderId);
+          return data.orderId;
+        } else {
+          // Normal flow: create order via /api/orders
+          log('createOrder -> calling /api/orders (new flow)');
+          const resp = await fetch('/api/orders', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ customerId })
+          });
+          const data = await resp.json();
+          if (!resp.ok) {
+            log('create order error', JSON.stringify(data));
+            throw new Error(data.error || JSON.stringify(data));
+          }
+          log('order created (initial):', data.id);
+          return data.id;
         }
-      };
+      },
 
-      if (customerId) {
-        orderPayload.payment_source.paypal.attributes.vault.customer_id = customerId;
-        console.log('Added customerId to vault attributes');
+      onApprove: async (data) => {
+        log('onApprove called', JSON.stringify(data));
+        // If server already captured in oneclick, you may skip capture here.
+        // But to be safe in mixed flows, call capture endpoint if order not captured.
+        try {
+          const resp = await fetch(`/api/orders/${data.orderID}/capture`, { method: 'POST' });
+          const capture = await resp.json();
+          if (!resp.ok) {
+            log('capture failed in onApprove', JSON.stringify(capture));
+            throw new Error(capture.error || JSON.stringify(capture));
+          }
+          log('capture succeeded:', JSON.stringify(capture));
+          // Save vault/customer/payer/account info if present
+          const vaultInfo = capture.payment_source?.paypal?.attributes?.vault;
+          const payerInfo = capture.payer;
+          const paypalSource = capture.payment_source?.paypal;
+          if (vaultInfo?.id) {
+            vaultId = vaultInfo.id;
+            localStorage.setItem('paypal_vault_id', vaultId);
+          }
+          if (vaultInfo?.customer?.id) {
+            customerId = vaultInfo.customer.id;
+            localStorage.setItem('paypal_customer_id', customerId);
+          }
+          if (payerInfo?.payer_id) {
+            payerId = payerInfo.payer_id;
+            localStorage.setItem('paypal_payer_id', payerId);
+          }
+          if (paypalSource?.account_id) {
+            accountId = paypalSource.account_id;
+            localStorage.setItem('paypal_account_id', accountId);
+          }
+          renderSavedInfo();
+        } catch (e) {
+          log('onApprove capture error', e.message || e);
+        }
+      },
+
+      onError: (err) => {
+        log('PayPal Buttons error', err && (err.toString ? err.toString() : JSON.stringify(err)));
       }
-    }
-
-    const resp = await axios({
-      method: 'post',
-      url: `${PAYPAL_API_BASE}/v2/checkout/orders`,
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        'PayPal-Request-Id': `ORDER-${Date.now()}`
-      },
-      data: orderPayload
-    });
-
-    res.json(resp.data);
-  } catch (err) {
-    console.error('Order作成エラー:', err.response?.data || err.message);
-    res.status(500).json({ error: 'Order作成に失敗しました', details: err.response?.data || err.message });
+    }).render('#paypal-button-container').then(()=> log('PayPal buttons rendered'));
   }
-});
 
-// One-click endpoint: Create Order (with token) and immediately Capture (server-side)
-app.post('/api/orders/oneclick', async (req, res) => {
-  try {
-    const accessToken = await getPayPalAccessToken();
-    const { vaultId, customerId = null, amount = '100', currency = 'JPY', description = 'Vault One-click charge' } = req.body || {};
-
-    if (!vaultId) {
-      return res.status(400).json({ error: 'vaultId が必要です（PAYMENT_METHOD_TOKEN）' });
-    }
-
-    // JPY integer check
-    if (currency === 'JPY' && String(amount).includes('.')) {
-      return res.status(400).json({ error: 'JPY は小数不可です。amount を整数文字列にしてください。' });
-    }
-
-    // 1) Create Order with payment_source.token
-    const orderPayload = {
-      intent: 'CAPTURE',
-      purchase_units: [{
-        amount: { currency_code: currency, value: String(amount) },
-        description
-      }],
-      payment_source: {
-        token: { id: vaultId, type: 'PAYMENT_METHOD_TOKEN' }
+  // Button: direct oneclick (same as clicking PayPal button when vault exists)
+  document.getElementById('oneclickDirect').onclick = async () => {
+    if (!vaultId) return alert('Vault IDがありません。まずVaultを作成してください（初回購入）。');
+    log('直接ワンクリック実行: calling /api/orders/oneclick');
+    try {
+      const resp = await fetch('/api/orders/oneclick', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ vaultId, customerId, amount: '100', currency: 'JPY' })
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        log('oneclick direct failed', JSON.stringify(data));
+        alert('Failed: ' + (data.error || JSON.stringify(data)));
+        return;
       }
-    };
+      log('oneclick direct success: ' + JSON.stringify(data));
+      // update saved info if capture returned vault/customer
+      const cap = data.capture;
+      const vaultInfo = cap?.payment_source?.paypal?.attributes?.vault;
+      const payerInfo = cap?.payer;
+      if (vaultInfo?.id) {
+        vaultId = vaultInfo.id;
+        localStorage.setItem('paypal_vault_id', vaultId);
+      }
+      if (vaultInfo?.customer?.id) {
+        customerId = vaultInfo.customer.id;
+        localStorage.setItem('paypal_customer_id', customerId);
+      }
+      if (payerInfo?.payer_id) {
+        payerId = payerInfo.payer_id;
+        localStorage.setItem('paypal_payer_id', payerId);
+      }
+      renderSavedInfo();
+      alert('決済完了');
+    } catch (e) {
+      log('oneclick direct error', e.message || e);
+      alert('エラー: ' + (e.message || e));
+    }
+  };
 
-    console.log('ONECLICK: creating order for vaultId', vaultId);
-    const createResp = await axios({
-      method: 'post',
-      url: `${PAYPAL_API_BASE}/v2/checkout/orders`,
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        'PayPal-Request-Id': `ONECLICK-ORDER-${Date.now()}`
-      },
-      data: orderPayload
-    });
-
-    const orderId = createResp.data.id;
-    console.log('ONECLICK: order created', orderId, createResp.data.status);
-
-    // 2) Capture immediately
-    const captureResp = await axios({
-      method: 'post',
-      url: `${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`,
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        'PayPal-Request-Id': `ONECLICK-CAPTURE-${Date.now()}`
-      },
-      data: {}
-    });
-
-    console.log('ONECLICK: capture done', captureResp.data.status);
-
-    res.json({
-      orderId,
-      orderStatus: createResp.data.status,
-      capture: captureResp.data
-    });
-  } catch (err) {
-    console.error('ONECLICK ERROR:', err.response?.data || err.message);
-    res.status(500).json({ error: 'oneclick failed', details: err.response?.data || err.message });
-  }
-});
-
-// Capture endpoint (used by SDK onApprove for first-time flow)
-app.post('/api/orders/:orderId/capture', async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    const accessToken = await getPayPalAccessToken();
-
-    const resp = await axios({
-      method: 'post',
-      url: `${PAYPAL_API_BASE}/v2/checkout/orders/${orderId}/capture`,
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        'PayPal-Request-Id': `CAPTURE-${Date.now()}`
-      },
-      data: {}
-    });
-
-    res.json(resp.data);
-  } catch (err) {
-    console.error('Capture エラー:', err.response?.data || err.message);
-    res.status(500).json({ error: 'Captureに失敗しました', details: err.response?.data || err.message });
-  }
-});
-
-app.listen(PORT, () => {
-  console.log('='.repeat(50));
-  console.log(`Server running on port ${PORT} (mode=${PAYPAL_MODE})`);
-  console.log('='.repeat(50));
-});
+})();
+</script>
+</body>
+</html>
