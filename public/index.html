@@ -7,37 +7,28 @@
   <style>
     body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial,sans-serif;padding:24px;background:#f6f8fb}
     .card{max-width:900px;margin:0 auto;background:#fff;padding:20px;border-radius:10px;box-shadow:0 4px 18px rgba(0,0,0,.06)}
-    .row{display:flex;gap:12px}
-    input{padding:8px;border-radius:6px;border:1px solid #ccc;width:100%}
-    button{padding:10px 14px;border-radius:8px;border:0;cursor:pointer}
-    .primary{background:#0070ba;color:#fff}
-    .muted{background:#eef2f6}
+    input,button{padding:8px;border-radius:6px;border:1px solid #ccc}
+    button{cursor:pointer}
+    .primary{background:#0070ba;color:#fff;border:none;padding:10px;border-radius:6px}
     pre{background:#0b1220;color:#e6eef8;padding:12px;border-radius:8px;overflow:auto}
-    .info{margin:12px 0;color:#333}
   </style>
 </head>
 <body>
   <div class="card">
     <h1>PayPal Vault — Returning + One-click (robust)</h1>
-    <p class="info">Vaultがある場合はモーダルを開かず、サーバの Create→Capture を一度だけ呼んで決済完了にします。</p>
+    <p>Vaultがある場合はモーダルを開かずサーバで Create→Capture を一度だけ実行します。</p>
 
-    <div style="margin-bottom:12px">
+    <div>
       <button id="clearStorage" class="muted">LocalStorage クリア</button>
     </div>
-
-    <div style="margin-bottom:12px">
-      <strong>保存済み情報（localStorage）</strong>
-      <div id="savedInfo" style="margin-top:8px"></div>
-    </div>
-
-    <div id="paypal-button-container" style="margin-bottom:20px; min-height:120px"></div>
-
+    <div id="savedInfo" style="margin-top:12px"></div>
+    <div id="paypal-button-container" style="margin-top:12px; min-height:120px"></div>
     <div style="margin-top:12px">
       <button id="oneclickDirect" class="primary">ワンクリック決済（Vaultがある場合）</button>
     </div>
 
-    <h3 style="margin-top:20px">ログ / 結果</h3>
-    <pre id="log">準備中...</pre>
+    <h3 style="margin-top:20px">ログ</h3>
+    <pre id="log">starting...</pre>
   </div>
 
 <script>
@@ -56,8 +47,6 @@
     cont.innerHTML = '';
     if (vaultId) cont.innerHTML += `<div>🔐 vaultId: <code>${vaultId}</code></div>`;
     if (customerId) cont.innerHTML += `<div>👤 customerId: <code>${customerId}</code></div>`;
-    if (payerId) cont.innerHTML += `<div>payerId: <code>${payerId}</code></div>`;
-    if (accountId) cont.innerHTML += `<div>accountId: <code>${accountId}</code></div>`;
     if (!vaultId && !customerId) cont.innerHTML = '<div>保存なし</div>';
   }
   renderSavedInfo();
@@ -69,23 +58,18 @@
     log('LocalStorage cleared');
   };
 
-  // 1) get config
-  const cfgResp = await fetch('/api/config');
-  const cfg = await cfgResp.json();
-  const CLIENT_ID = cfg.clientId;
-
-  // 2) If customerId present, request id_token with target_customer_id
+  // config + id_token
+  const cfg = (await (await fetch('/api/config')).json());
   let tokenUrl = '/api/generate-client-token';
   if (customerId) tokenUrl += `?customer_id=${encodeURIComponent(customerId)}`;
-
   const tokenResp = await fetch(tokenUrl);
   const tokenJson = await tokenResp.json();
   const ID_TOKEN = tokenJson.id_token;
   log('id_token obtained');
 
-  // 3) Load PayPal SDK with vault=true and data-user-id-token
+  // Inject SDK with vault=true and data-user-id-token
   const script = document.createElement('script');
-  script.src = `https://www.paypal.com/sdk/js?client-id=${CLIENT_ID}&vault=true&intent=capture&locale=ja_JP&currency=JPY`;
+  script.src = `https://www.paypal.com/sdk/js?client-id=${cfg.clientId}&vault=true&intent=capture&locale=ja_JP&currency=JPY`;
   script.setAttribute('data-user-id-token', ID_TOKEN);
   document.head.appendChild(script);
 
@@ -94,11 +78,7 @@
     renderButtons();
   };
 
-  script.onerror = (e) => {
-    log('PayPal SDK load error', e.message || e);
-  };
-
-  // Check vaulted payment tokens (populate vaultId if available)
+  // populate vaultId if customerId present
   async function checkVaultedPayments(){
     if (!customerId) return;
     try {
@@ -109,37 +89,23 @@
         localStorage.setItem('paypal_vault_id', vaultId);
         log('Found vault token:', vaultId);
         renderSavedInfo();
-      } else {
-        log('No payment_tokens for customer');
       }
     } catch (e) {
-      log('Error fetching payment tokens', e.message || e);
+      log('payment-tokens fetch error', e.message || e);
     }
   }
-
   await checkVaultedPayments();
 
-  // Render PayPal Buttons
   function renderButtons(){
-    if (!window.paypal) {
-      log('paypal SDK not ready');
-      return;
-    }
+    if (!window.paypal) { log('paypal not loaded'); return; }
+    const capturedOrders = new Map(); // orderId -> capture
 
-    if (vaultId) {
-      const desc = document.createElement('div');
-      desc.innerHTML = '<strong>⚡ ワンクリック（保存済み）で支払います</strong>';
-      document.getElementById('paypal-button-container').appendChild(desc);
-    }
-
-    // capturedOrders: map orderId -> capture info, populated when oneclick runs
-    const capturedOrders = new Map();
-
-    // Helper: perform oneclick server call (Create->Capture) and return result
-    async function callOneclick() {
+    async function callOneclickFromClient() {
+      // Add a request id so server idempotency can use it (optional)
+      const requestId = 'client-' + (Date.now()) + '-' + Math.random().toString(36).slice(2,8);
       const resp = await fetch('/api/orders/oneclick', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'X-Idempotency-Key': requestId },
         body: JSON.stringify({ vaultId, customerId, amount: '100', currency: 'JPY' })
       });
       const body = await resp.json();
@@ -149,106 +115,61 @@
 
     paypal.Buttons({
       style: { layout: 'vertical', label: 'paypal' },
-
-      // Give SDK the customer_id so it displays saved payment methods
       vault: customerId ? { customer_id: customerId } : undefined,
 
-      /**
-       * onClick: Try to perform oneclick here (most common). But createOrder may still be called by SDK,
-       * so createOrder must tolerate pre-captured orders (below).
-       */
       onClick: async (data, actions) => {
         try {
           if (vaultId) {
-            log('onClick: vaultId present — calling /api/orders/oneclick');
-
-            // Call oneclick and record orderId -> capture
+            log('onClick: vaultId present -> calling oneclick');
             let body;
             try {
-              body = await callOneclick();
+              body = await callOneclickFromClient();
             } catch (errBody) {
-              log('oneclick (onClick) failed', JSON.stringify(errBody));
+              log('oneclick failed in onClick', JSON.stringify(errBody));
               await actions.reject();
-              alert('決済に失敗しました: ' + (errBody.error || JSON.stringify(errBody)));
+              alert('決済失敗: ' + (errBody.error || JSON.stringify(errBody)));
               return;
             }
-
-            log('oneclick (onClick) success, order:', body.orderId, 'capture status:', body.capture?.status);
             if (body.orderId) capturedOrders.set(body.orderId, body.capture || null);
-
-            // Prevent SDK from opening modal
-            await actions.reject();
-
-            // Save local storage info
+            await actions.reject(); // prevents modal
+            // persist returned data
             const cap = body.capture;
             const vaultInfo = cap?.payment_source?.paypal?.attributes?.vault;
             const payerInfo = cap?.payer;
             const paypalSource = cap?.payment_source?.paypal;
-
-            if (vaultInfo?.id) {
-              vaultId = vaultInfo.id;
-              localStorage.setItem('paypal_vault_id', vaultId);
-            }
-            if (vaultInfo?.customer?.id) {
-              customerId = vaultInfo.customer.id;
-              localStorage.setItem('paypal_customer_id', customerId);
-            }
-            if (payerInfo?.payer_id) {
-              payerId = payerInfo.payer_id;
-              localStorage.setItem('paypal_payer_id', payerId);
-            }
-            if (paypalSource?.account_id) {
-              accountId = paypalSource.account_id;
-              localStorage.setItem('paypal_account_id', accountId);
-            }
+            if (vaultInfo?.id) { vaultId = vaultInfo.id; localStorage.setItem('paypal_vault_id', vaultId); }
+            if (vaultInfo?.customer?.id) { customerId = vaultInfo.customer.id; localStorage.setItem('paypal_customer_id', customerId); }
+            if (payerInfo?.payer_id) { payerId = payerInfo.payer_id; localStorage.setItem('paypal_payer_id', payerId); }
+            if (paypalSource?.account_id) { accountId = paypalSource.account_id; localStorage.setItem('paypal_account_id', accountId); }
             renderSavedInfo();
-
             alert('決済が完了しました');
             return;
           }
-
-          // No vault -> allow normal SDK flow (modal opens)
           await actions.resolve();
         } catch (err) {
           console.error('onClick error', err);
           await actions.reject();
-          alert('決済処理中にエラーが発生しました。');
+          alert('エラーが発生しました');
         }
       },
 
-      /**
-       * createOrder: tolerant implementation.
-       * - If order already captured by onClick, return the captured orderId.
-       * - If not captured and vaultId exists, perform oneclick here (create+capture) and return orderId.
-       * - If no vaultId, perform normal /api/orders create.
-       */
       createOrder: async () => {
         try {
           if (vaultId) {
-            // If onClick already created+captured, return that orderId immediately
-            for (const [orderId] of capturedOrders) {
-              log('createOrder: returning pre-captured orderId from onClick:', orderId);
-              return orderId;
-            }
-
-            // Otherwise, onClick didn't run or didn't finish first. Execute oneclick here.
-            log('createOrder: vaultId present but not pre-captured. Calling /api/orders/oneclick from createOrder.');
-            const body = await callOneclick();
+            // If onClick already populated capturedOrders, return existing orderId
+            for (const [orderId] of capturedOrders) return orderId;
+            // else call oneclick here
+            log('createOrder: vault present but not pre-captured. Calling oneclick from createOrder.');
+            const body = await callOneclickFromClient();
             if (body.orderId) capturedOrders.set(body.orderId, body.capture || null);
-            log('oneclick (createOrder) success', body.orderId);
             return body.orderId;
           }
-
-          // Normal initial flow
-          log('createOrder: calling /api/orders for initial flow');
+          // initial flow
           const resp = await fetch('/api/orders', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ customerId })
+            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ customerId })
           });
           const data = await resp.json();
           if (!resp.ok) throw data;
-          log('order created (initial):', data.id);
           return data.id;
         } catch (err) {
           console.error('createOrder error', err);
@@ -256,113 +177,59 @@
         }
       },
 
-      /**
-       * onApprove: If the order was captured by the server already, skip capture.
-       * Otherwise, perform capture as normal.
-       */
       onApprove: async (data) => {
         try {
           const orderId = data.orderID || data.orderId;
-          log('onApprove called for', orderId);
-
+          log('onApprove for', orderId);
           if (capturedOrders.has(orderId)) {
-            log('Order already captured by server; skipping client-side capture:', orderId);
+            log('Order already captured; skipping capture:', orderId);
             return;
           }
-
-          // Not captured yet -> capture via server endpoint
           const resp = await fetch(`/api/orders/${orderId}/capture`, { method: 'POST' });
           const capture = await resp.json();
           if (!resp.ok) {
-            // Treat ORDER_ALREADY_CAPTURED as success
             if (capture && capture.name === 'UNPROCESSABLE_ENTITY') {
               const already = (capture.details || []).some(d => d.issue === 'ORDER_ALREADY_CAPTURED');
-              if (already) {
-                log('Capture attempted but order already captured (treated as success).', capture);
-                capturedOrders.set(orderId, capture);
-                return;
-              }
+              if (already) { log('ORDER_ALREADY_CAPTURED treated as success'); capturedOrders.set(orderId, capture); return; }
             }
             throw new Error(capture.error || JSON.stringify(capture));
           }
-
-          log('capture succeeded (onApprove):', capture);
           capturedOrders.set(orderId, capture);
-
-          // Save vault/customer/payer info if present
-          const vaultInfo = capture.payment_source?.paypal?.attributes?.vault;
-          const payerInfo = capture.payer;
-          const paypalSource = capture.payment_source?.paypal;
-          if (vaultInfo?.id) {
-            vaultId = vaultInfo.id;
-            localStorage.setItem('paypal_vault_id', vaultId);
-          }
-          if (vaultInfo?.customer?.id) {
-            customerId = vaultInfo.customer.id;
-            localStorage.setItem('paypal_customer_id', customerId);
-          }
-          if (payerInfo?.payer_id) {
-            localStorage.setItem('paypal_payer_id', payerInfo.payer_id);
-          }
-          if (paypalSource?.account_id) {
-            localStorage.setItem('paypal_account_id', paypalSource.account_id);
-          }
-          renderSavedInfo();
-
         } catch (err) {
           console.error('onApprove error', err);
         }
       },
 
-      onError: (err) => {
-        console.error('PayPal Buttons error', err);
-      }
-
-    }).render('#paypal-button-container').then(()=> log('PayPal buttons rendered'));
+      onError: (err) => { console.error('PayPal Buttons error', err); }
+    }).render('#paypal-button-container').then(()=> log('buttons rendered'));
   }
 
-  // direct oneclick button (same as clicking PayPal button when vault exists)
   document.getElementById('oneclickDirect').onclick = async () => {
-    if (!vaultId) return alert('Vault IDがありません。まずVaultを作成してください（初回購入）。');
-    log('直接ワンクリック実行: calling /api/orders/oneclick');
+    if (!vaultId) return alert('Vault IDがありません');
     try {
-      const body = await (async () => {
-        const resp = await fetch('/api/orders/oneclick', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({ vaultId, customerId, amount: '100', currency: 'JPY' })
-        });
-        const json = await resp.json();
-        if (!resp.ok) throw json;
-        return json;
-      })();
-
-      log('oneclick direct success: ' + JSON.stringify(body));
+      log('oneclickDirect: calling oneclick');
+      const resp = await fetch('/api/orders/oneclick', {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify({ vaultId, customerId, amount:'100', currency:'JPY' })
+      });
+      const body = await resp.json();
+      if (!resp.ok) throw body;
+      log('oneclickDirect success', JSON.stringify(body));
+      alert('決済完了');
+      // store returned info
       const cap = body.capture;
       const vaultInfo = cap?.payment_source?.paypal?.attributes?.vault;
       const payerInfo = cap?.payer;
       const paypalSource = cap?.payment_source?.paypal;
-      if (vaultInfo?.id) {
-        vaultId = vaultInfo.id;
-        localStorage.setItem('paypal_vault_id', vaultId);
-      }
-      if (vaultInfo?.customer?.id) {
-        customerId = vaultInfo.customer.id;
-        localStorage.setItem('paypal_customer_id', vaultInfo.customer.id);
-      }
-      if (payerInfo?.payer_id) {
-        payerId = payerInfo.payer_id;
-        localStorage.setItem('paypal_payer_id', payerInfo.payer_id);
-      }
-      if (paypalSource?.account_id) {
-        accountId = paypalSource.account_id;
-        localStorage.setItem('paypal_account_id', paypalSource.account_id);
-      }
+      if (vaultInfo?.id) { vaultId = vaultInfo.id; localStorage.setItem('paypal_vault_id', vaultId); }
+      if (vaultInfo?.customer?.id) { customerId = vaultInfo.customer.id; localStorage.setItem('paypal_customer_id', customerId); }
+      if (payerInfo?.payer_id) localStorage.setItem('paypal_payer_id', payerInfo.payer_id);
+      if (paypalSource?.account_id) localStorage.setItem('paypal_account_id', paypalSource.account_id);
       renderSavedInfo();
-      alert('決済完了');
     } catch (e) {
-      log('oneclick direct error', e.error || e);
-      alert('エラー: ' + (e.error || e));
+      console.error('oneclickDirect error', e);
+      alert('oneclick failed: ' + (e.error || JSON.stringify(e)));
     }
   };
 
