@@ -275,7 +275,11 @@ app.post('/api/orders/oneclick', async (req, res) => {
       capture: captureResp.data
     });
   } catch (err) {
-    console.error('ONECLICK ERROR:', err.response?.data || err.message);
+    console.error('ONECLICK ERROR:', {
+      message: err.message,
+      status: err.response?.status,
+      data: err.response?.data
+    });
     res.status(500).json({ error: 'oneclick failed', details: err.response?.data || err.message });
   }
 });
