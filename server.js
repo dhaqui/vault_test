@@ -1,17 +1,11 @@
-// server.js
-// Full implementation: /api/config, /api/generate-client-token, /api/payment-tokens,
-// /api/orders (initial), /api/orders/oneclick (Create+Capture, idempotent-ish),
-// /api/orders/:orderId/capture
-//
-// NOTE: This example uses an in-memory idempotency map for simplicity. In production,
-// store idempotency state in a DB or cache (Redis) with expiration.
-
+// server.js (uuid を使わない版 — crypto.randomUUID を利用)
 const express = require('express');
 const axios = require('axios');
 const dotenv = require('dotenv');
 const cors = require('cors');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
+// const { v4: uuidv4 } = require('uuid'); // removed
+const { randomUUID } = require('crypto'); // use Node builtin UUID
 
 dotenv.config();
 
@@ -30,7 +24,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Simple in-memory idempotency map: key -> { orderId, capture, createdAt }
-// Key should be PayPal-Request-Id or merchant-provided id; in real infra use Redis/DB.
+// Key should be PayPal-Request-Id or merchant-provided id; in production use Redis/DB.
 const idempotencyStore = new Map();
 const IDEMPOTENCY_TTL_MS = 1000 * 60 * 60; // 1 hour for demo; adjust in prod
 
@@ -177,7 +171,7 @@ app.post('/api/orders', async (req, res) => {
 // ONECLICK: Create Order with payment token and immediately Capture. Idempotent-ish by requestId.
 app.post('/api/orders/oneclick', async (req, res) => {
   // We use requestId from header or generate one
-  const requestId = req.headers['x-idempotency-key'] || req.headers['paypal-request-id'] || uuidv4();
+  const requestId = req.headers['x-idempotency-key'] || req.headers['paypal-request-id'] || randomUUID();
   try {
     cleanupIdempotency();
 
@@ -247,7 +241,6 @@ app.post('/api/orders/oneclick', async (req, res) => {
             return res.json({ orderId, orderStatus: orderResp.data.status, capture });
           } catch (getErr) {
             console.error('oneclick: failed to GET order after ORDER_ALREADY_CAPTURED', getErr.response?.data || getErr.message);
-            // fallback: return createResp (order created) but note capture absent
             idempotencyStore.set(requestId, { orderId, orderStatus: createResp.data.status, capture: null, createdAt: Date.now() });
             return res.json({ orderId, orderStatus: createResp.data.status, capture: null });
           }
