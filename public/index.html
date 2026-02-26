@@ -136,30 +136,18 @@
   <!-- モード選択 -->
   <div class="card">
     <h2>🧪 テストモード選択</h2>
-    <div class="mode-grid">
+    <div class="mode-grid" style="grid-template-columns: repeat(2, 1fr)">
 
       <div class="mode-card selected" data-mode="no_shipping" onclick="selectMode('no_shipping', this)">
         <div class="icon">🚫</div>
         <div class="title">住所なし</div>
         <div class="desc"><code>NO_SHIPPING</code><br>住所を渡さない</div>
-        <div class="tag tag-green">ワンクリック ✅</div>
-        <div class="tag tag-red">Seller Protection ❌</div>
-      </div>
-
-      <div class="mode-card" data-mode="none" onclick="selectMode('none', this)">
-        <div class="icon">📦</div>
-        <div class="title">住所あり<br>NO_SHIPPING</div>
-        <div class="desc"><code>NO_SHIPPING</code><br>住所は渡す</div>
-        <div class="tag tag-yellow">ワンクリック ❓</div>
-        <div class="tag tag-red">Seller Protection ❌</div>
       </div>
 
       <div class="mode-card" data-mode="set_provided" onclick="selectMode('set_provided', this)">
-        <div class="icon">🛡️</div>
-        <div class="title">住所あり<br>SET_PROVIDED</div>
+        <div class="icon">📦</div>
+        <div class="title">住所あり</div>
         <div class="desc"><code>SET_PROVIDED_ADDRESS</code><br>住所を渡す</div>
-        <div class="tag tag-red">ワンクリック ❌</div>
-        <div class="tag tag-green">Seller Protection ✅</div>
       </div>
 
     </div>
