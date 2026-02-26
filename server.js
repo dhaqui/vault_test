@@ -20,8 +20,6 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// ===== Utilities =====
-
 async function getAccessToken() {
   const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
   const resp = await axios.post(
@@ -32,7 +30,6 @@ async function getAccessToken() {
   return resp.data.access_token;
 }
 
-// target_customer_id を渡すことで Returning Payer 用の id_token を生成
 async function getUserIdToken(customerId = null) {
   const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
   let body = 'grant_type=client_credentials&response_type=id_token';
@@ -50,8 +47,6 @@ async function getUserIdToken(customerId = null) {
   return resp.data.id_token;
 }
 
-// ===== Routes =====
-
 app.get('/health', (req, res) => res.json({ status: 'OK', mode: PAYPAL_MODE }));
 
 app.get('/api/config', (req, res) => {
@@ -59,8 +54,6 @@ app.get('/api/config', (req, res) => {
   res.json({ clientId: PAYPAL_CLIENT_ID, mode: PAYPAL_MODE });
 });
 
-// SDK 用 User ID Token
-// Returning Payer の場合は ?customer_id=xxx を渡す
 app.get('/api/generate-client-token', async (req, res) => {
   try {
     const idToken = await getUserIdToken(req.query.customer_id || null);
@@ -71,7 +64,6 @@ app.get('/api/generate-client-token', async (req, res) => {
   }
 });
 
-// Payment Tokens 一覧（Vault 済みトークン確認用）
 app.get('/api/payment-tokens/:customerId', async (req, res) => {
   try {
     const token = await getAccessToken();
@@ -87,35 +79,56 @@ app.get('/api/payment-tokens/:customerId', async (req, res) => {
 });
 
 // Order 作成
-// 初回：Vault保存付き通常注文
-// 2回目以降：customerId を vault.customer_id に紐付けて同じフローを維持
+// shippingMode: 'none' | 'no_shipping' | 'set_provided'
 app.post('/api/orders', async (req, res) => {
   try {
     const token = await getAccessToken();
-    const { customerId } = req.body || {};
+    const { customerId, shippingMode = 'no_shipping' } = req.body || {};
+
+    // テスト用住所
+    const shippingAddress = {
+      name: { full_name: 'テスト 太郎' },
+      address: {
+        address_line_1: '1-1-1 Shinjuku',
+        admin_area_2: 'Shinjuku-ku',
+        admin_area_1: 'Tokyo',
+        postal_code: '160-0022',
+        country_code: 'JP'
+      }
+    };
+
+    // shipping_preference の設定
+    // none        → 住所なし・NO_SHIPPING（純粋なワンクリック基準）
+    // no_shipping → 住所あり・NO_SHIPPING（ワンクリック期待、Seller Protection なし）
+    // set_provided→ 住所あり・SET_PROVIDED_ADDRESS（Seller Protection あり、ワンクリック不可の可能性）
+    const shippingPreference =
+      shippingMode === 'set_provided' ? 'SET_PROVIDED_ADDRESS' : 'NO_SHIPPING';
+
+    const includeAddress = shippingMode !== 'none';
+
+    const purchaseUnit = {
+      amount: { currency_code: 'JPY', value: '100' },
+      description: 'PayPal Vault テスト商品',
+      ...(includeAddress && { shipping: shippingAddress })
+    };
 
     const experienceContext = {
       payment_method_preference: 'IMMEDIATE_PAYMENT_REQUIRED',
       brand_name: 'PayPal Vault Demo',
       locale: 'ja-JP',
       landing_page: 'LOGIN',
-      shipping_preference: 'NO_SHIPPING',
       user_action: 'PAY_NOW',
+      shipping_preference: shippingPreference,
       return_url: `${req.protocol}://${req.get('host')}/success`,
       cancel_url: `${req.protocol}://${req.get('host')}/cancel`
     };
 
     const payload = {
       intent: 'CAPTURE',
-      purchase_units: [{
-        amount: { currency_code: 'JPY', value: '100' },
-        description: 'PayPal Vault テスト商品'
-      }],
+      purchase_units: [purchaseUnit],
       payment_source: {
         paypal: {
           experience_context: experienceContext,
-          // 初回のみ: Vault保存の指示を付与
-          // 2回目以降 (customerId あり): 既にVault済みのため attributes 不要
           ...(!customerId && {
             attributes: {
               vault: {
@@ -129,7 +142,12 @@ app.post('/api/orders', async (req, res) => {
       }
     };
 
-    console.log(customerId ? `Order: Returning Payer (${customerId})` : 'Order: New Payer (Vault保存あり)');
+    console.log('='.repeat(50));
+    console.log(`Order: ${customerId ? 'Returning Payer' : 'New Payer'}`);
+    console.log(`shippingMode: ${shippingMode}`);
+    console.log(`shipping_preference: ${shippingPreference}`);
+    console.log(`includeAddress: ${includeAddress}`);
+    console.log('='.repeat(50));
 
     const resp = await axios.post(
       `${PAYPAL_API_BASE}/v2/checkout/orders`,
@@ -147,7 +165,6 @@ app.post('/api/orders', async (req, res) => {
   }
 });
 
-// Capture
 app.post('/api/orders/:orderId/capture', async (req, res) => {
   try {
     const token = await getAccessToken();
