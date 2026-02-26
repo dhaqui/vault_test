@@ -1,4 +1,3 @@
-
 <!doctype html>
 <html lang="ja">
 <head>
@@ -217,19 +216,23 @@
 
     const cfg = await (await fetch('/api/config')).json();
 
-    // Returning Payer の場合は target_customer_id を渡して id_token を取得
-    // → SDK が保存済みアカウントをモーダルに表示してくれる
     const tokenUrl = customerId
       ? `/api/generate-client-token?customer_id=${encodeURIComponent(customerId)}`
       : '/api/generate-client-token';
 
     const { id_token } = await (await fetch(tokenUrl)).json();
-    log(customerId ? `Returning Payer 用 id_token 取得` : '新規 Payer 用 id_token 取得', 'vault');
+    log(customerId ? 'Returning Payer 用 id_token 取得' : '新規 Payer 用 id_token 取得', 'vault');
 
     return new Promise((resolve, reject) => {
       const script = document.createElement('script');
-      // vault=true を付けることで SDK が Vault 対応モードで動作する
-      script.src = `https://www.paypal.com/sdk/js?client-id=${cfg.clientId}&vault=true&intent=capture&locale=ja_JP&currency=JPY`;
+
+      // ⚠️ vault=true は新規Payerのみ付与
+      // Returning Payer に vault=true を付けると OneClickApproveOrder が動作しない（Braintree仕様）
+      const vaultParam = customerId ? '' : '&vault=true';
+      script.src = `https://www.paypal.com/sdk/js?client-id=${cfg.clientId}&intent=capture${vaultParam}&locale=ja_JP&currency=JPY`;
+
+      // data-user-id-token を渡すことで SDK が GetSmartWallet を呼び出し
+      // Returning Payer の場合はボタンに保存済み支払い方法のロゴ/情報が表示される
       script.setAttribute('data-user-id-token', id_token);
       script.onload  = () => { log('✓ PayPal SDK 読み込み完了', 'success'); resolve(); };
       script.onerror = reject;
@@ -244,13 +247,11 @@
     paypal.Buttons({
       style: { layout: 'vertical', label: 'paypal' },
 
-      // Returning Payer の場合: customer_id を渡すことで
-      // モーダル内に保存済みアカウントが選択済みで表示される
+      // Returning Payer: customer_id を渡す
+      // SDK が GetSmartWallet を呼び出し、ボタンに保存済み支払い方法を表示する
+      // ワンクリック条件が揃えば OneClickApproveOrder がポップアップなしで承認する
       vault: customerId ? { customer_id: customerId } : undefined,
 
-      // Order 作成
-      // 初回・2回目ともに同じエンドポイント。
-      // customerId がある場合はサーバー側で vault.customer_id に紐付ける
       createOrder: async () => {
         log('Order 作成中...');
         showStatus('注文を作成中...');
@@ -265,7 +266,9 @@
         return data.id;
       },
 
-      // ユーザーが PayPal モーダルで承認後
+      // onApprove はワンクリック・通常フロー両方で呼ばれる
+      // ワンクリック成功時は SDK が内部で OneClickApproveOrder を実行済みのため
+      // ここでは Capture のみ行う
       onApprove: async (data) => {
         log('Capture 開始...');
         showStatus('決済処理中...');
@@ -275,13 +278,10 @@
 
         log('✓ Capture 完了', 'success');
 
-        // Vault 情報を保存
         const vaultInfo    = capture.payment_source?.paypal?.attributes?.vault;
         const paypalSource = capture.payment_source?.paypal;
 
         log('='.repeat(40), 'vault');
-        log('🔐 Vault 保存情報', 'vault');
-
         if (vaultInfo) {
           log(`Vault ID: ${vaultInfo.id}`, 'vault');
           log(`Vault Status: ${vaultInfo.status}`, 'vault');
@@ -304,11 +304,8 @@
 
         renderSaved();
         showStatus('✅ 決済完了！3秒後にリロードします...', 'success');
-
-        // Capture レスポンスを表示
         document.getElementById('result-section').style.display = 'block';
         document.getElementById('result-json').textContent = JSON.stringify(capture, null, 2);
-
         setTimeout(() => location.reload(), 3000);
       },
 
@@ -323,7 +320,12 @@
       }
 
     }).render('#paypal-button-container')
-      .then(() => log('✓ PayPal ボタン表示完了', 'success'));
+      .then(() => {
+        log('✓ PayPal ボタン表示完了', 'success');
+        if (customerId) {
+          log('GetSmartWallet 呼び出し中... ボタンに保存済み情報が表示されるまで待機', 'vault');
+        }
+      });
   }
 
   function clearData() {
