@@ -310,7 +310,12 @@
   // PayPal ボタン初期化
   function initButtons() {
     paypal.Buttons({
-      style: { layout: 'vertical', label: 'paypal' },
+        style: {
+          layout: 'vertical',
+          color:  'blue',
+          shape:  'rect',
+          label:  'paypal'
+        }
       vault: customerId ? { customer_id: customerId } : undefined,
 
       onClick: async (data, actions) => {
